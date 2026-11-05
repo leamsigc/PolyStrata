@@ -10182,6 +10182,18 @@ def poly_saved_conv(paths) -> int | str | None:
     return None
 
 
+def conv_cache_args(a, mib: int | None = None) -> list:
+    """The engine's conversation-cache flags: setup's command line when it names them, else the value decided by the
+    ask. Opt-in - nothing when neither is there, so a start is byte-identical to what it was."""
+    mib = a.conversation_cache_mib if a.conversation_cache_mib is not None else mib
+    if not mib:
+        return []
+    out = ["--conversation-cache-mib", str(mib)]
+    if a.conversation_cache_slots:
+        out += ["--conversation-cache-slots", str(a.conversation_cache_slots)]
+    return out
+
+
 def poly_asset() -> str:
     """The ready-made strata-poly's asset for this checkout: the engine and the image encoder are both in it."""
     return POLY_ASSET.format(src=source_hash(ENGINE_SOURCES + VISION_SOURCES))
@@ -10827,7 +10839,7 @@ def poly_setup(a, family, gpu, hip, cuda_tk, multi, ram, data, elsewhere, port, 
     if draft:
         args += ["--draft-model", str(draft)]
     if conv:
-        args += ["--conversation-cache-mib", str(conv)]
+        args += conv_cache_args(a, conv)
     if a.vram_reserve_mib is not None:
         args += ["--vram-reserve-mib", str(a.vram_reserve_mib)]
         ok(f"VRAM kept free for other programs: {a.vram_reserve_mib} MiB (--vram-reserve-mib; the expert cache takes "

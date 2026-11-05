@@ -90,8 +90,76 @@ experts of its own layers, and prompts flow through the cards in a pipeline: on 
 read 18-20% faster than on the 5080 alone, decoding on par. Every card must be an RTX 20 series or newer with 8 GB or
 more. See [MULTI_GPU.md](MULTI_GPU.md).
 
-**Several AMD cards** work the same way, numbered as setup lists them. A split pays only when no single card holds
-the model's experts ([AMD_HIP.md](AMD_HIP.md#rdna4-gfx1201)).
+**Several AMD cards:** setup takes one card (the one with the most VRAM, or `--gpu N`) unless you name more:
+`--gpus 1,0` splits the model's layers across them, the first one the main card (numbers as setup lists them). A
+split pays only when no single card holds the model's experts ([AMD_HIP.md](AMD_HIP.md#rdna4-gfx1201)).
+
+## Docker (Linux)
+
+The same idea, in a container (NVIDIA cards).
+
+1. Host: Docker with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+   and a driver **580 or newer** (CUDA 13.0).
+2. Build (this compiles the engine into the image, so the container never compiles):
+   `docker build -t strata .`
+   `docker build -t strata --build-arg CUDA_ARCHITECTURES=89 .` builds for one card only (faster).
+   The default covers RTX 30 (86), RTX 40 (89), RTX 50 (120) and A-series (80); a card outside that
+   set needs a rebuild with its own arch. Add `--build-arg BUILD_VISION=0` to skip the image encoder.
+3. Run (the first start downloads the ~70 GB model, then starts; later starts go straight to serving):
+   `docker run --rm --gpus all -p 8080:8080 --ulimit memlock=-1 -v strata-data:/data strata`
+
+   The setup choices are env vars: `-e MODEL=IQ2_XS -e FAMILY=qwen -e CONTEXT=32768 -e VISION=no`
+   (or `MODEL=Q2_0|IQ3_XXS|IQ3_S`, `FAMILY=swift|coder`; the defaults above are the recommended ones).
+   `-e VISION=cpu` keeps the image encoder on the CPU. `-e KV=int8|q4_0|k8v4` picks the KV cache
+   precision; `k8v4` is INT8 K with 4-bit V and keeps its KV in VRAM from 64K up.
+   Only the model files, the prepared pack, the MTP layer and the install config live in the
+   `strata-data` volume; the engine is part of the image. Switching between models already on the
+   volume needs no setup pass: `-e MODEL=Q2_0 -e FAMILY=coder` picks that model's config. Add
+   `-e REINSTALL=1` only to change settings for a model already set up (context, vision, KV, host,
+   api_key, LOW_RAM, PARALLEL, CONVERSATION_CACHE_MIB, CONVERSATION_CACHE_SLOTS), since those are
+   recorded in its config.
+   `-e PARALLEL=N` asks for N batch slots ([BATCHING.md](BATCHING.md)); `-e CONVERSATION_CACHE_MIB=N` sets the
+   MiB of RAM parked conversations may hold and `-e CONVERSATION_CACHE_SLOTS=N` how many at once
+   (the engine's default 4). Left empty, setup decides: the slots from what the card can hold, the
+   cache from the RAM left after the model.
+   `docker-compose.yml` instead reads a preset file: `MODEL_ENV=.env.qwen` (the default, Qwen3.8-Flash-Next IQ2_XS),
+   `.env.coder`, `.env.clover`, `.env.qwen36` or `.env.unsloth` (the original model from Unsloth's GGUF).
+   Set `MODEL_ENV` and **redeploy**: a restart only restarts the container and keeps its environment, so it
+   cannot switch the model. The entry point reads the preset itself as well, so `MODEL_ENV` also works where the
+   platform builds the Dockerfile and never reads `docker-compose.yml` (a Dockerfile app type does not);
+   the preset then wins over `FAMILY`/`MODEL`/... set beside it, except `REINSTALL`, which stays as you set it.
+   A `MODEL_ENV` naming a file that is not in the image stops the start with a message instead of serving the
+   default model.
+   `API_KEY` still has to come from the environment. Each preset has its own context, slots and cache, and
+   `REINSTALL=1` in a preset runs one setup pass when changing settings for a model already on the volume.
+   The first start of a model downloads 58-94 GB while the container runs, so the image's health check allows
+   six hours before it reports the container unhealthy (a platform that watches it must not give up earlier).
+   `MODEL` (with `FAMILY`) selects `/data/config/strata-<model>.json` (the model name in lowercase), so
+   `-e MODEL=IQ3_S.1X4-BATCH9` starts `/data/config/strata-iq3_s.1x4-batch9.json`: that is the way to keep
+   several configs of one model on one volume. `-e CONFIG=/data/config/my.json` overrides it with any
+   config file. A link `/opt/strata/strata-<model>.json` that already points into `/data/config/` (made by
+   a pod command before the entrypoint runs) is kept. The entrypoint prints one `Config:` line naming the
+   file the server starts with.
+   PolyStrata loads 32-62 GB into RAM. `--gpus all` on a host with two usable cards takes both: the
+   layer split is setup's recommended default ([MULTI_GPU.md](MULTI_GPU.md)), and a volume
+   set up for one card switches to the pair on its first start there. Pin one card with `-e GPU=0`,
+   or name them with `-e GPUS=0,2` and where the later card's layers start with `-e LAYER_SPLIT=18`.
+   A memory limit needs `-e LOW_RAM=on`, which maps the model's experts from the pack instead of
+   keeping them in RAM: setup.py measures the host's RAM, not the container's limit, so it cannot
+   see a cap. LOW_RAM runs on one card unless `GPUS` names several (then the experts the cards do not hold are
+   read through the OS file cache, which can fill the RAM during long prompts).
+   The server listens on `0.0.0.0:8080` by default; set `-e API_KEY=<secret>` before exposing the port
+   to a network. The image has a `HEALTHCHECK` on `/health`, so `docker ps` shows the container
+   healthy once the model is loaded, and `GET /v1/status` says what it is running.
+   Model files you already have (setup's `--gguf-dir`): mount their folder and name it, e.g.
+   `-v /models/UD-Q4_K_XL:/gguf -e GGUF_DIR=/gguf -e FAMILY=unsloth -e MODEL=UD-Q4_K_XL`.
+   Mount it writable for the first start: setup checks the Unsloth file's SHA-256 once and keeps the
+   result as `<shard>.done` next to each shard; later starts skip setup, so `:ro` is fine then.
+   `-e RESIDENT_BUDGET_GIB=N` and `-e KV_STREAMING=on|off|auto` pass setup's `--resident-budget-gib`
+   and `--kv-streaming` (with `REINSTALL=1` for a model already set up).
+   Stopping: the engine releases its page-locked RAM (tens of GB) on SIGTERM, which takes longer than
+   Docker's default 10 s; give it time, or `docker stop` kills it (exit 137):
+   `docker run --stop-timeout 60 ...`, `docker stop -t 60 <name>`, or `stop_grace_period: 60s` in Compose.
 
 ## Older CPUs (experimental)
 

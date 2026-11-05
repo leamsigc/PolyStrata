@@ -1,0 +1,31 @@
+services:
+  strata:
+    build:
+      context: .
+      args:
+        CUDA_ARCHITECTURES: "120"  # RTX PRO 4000 Blackwell (sm_120) only -> much faster image build
+        BUILD_VISION: "1"          # picture encoder (runs on GPU)
+    expose: ["8080"]               # no ports: -> nothing bypasses Coolify's proxy/firewall
+    environment:
+      FAMILY: "qwen"               # = Qwen3.8-Flash-Next, the stock engine
+      MODEL: "IQ2_XS"              # size setup picks for 64 GB RAM; trained window 262K
+      CONTEXT: "131072"            # 128K inside spec; KV streaming auto-engages at 64K+
+      VISION: "yes"
+      HOST: "0.0.0.0"
+      PORT: "8080"
+      API_KEY: ${API_KEY:?}        # required Coolify var -> the server's --api-key
+      LOW_RAM: "auto"
+    volumes:
+      - strata-data:/data          # model + pack + config; chats stay in the browser
+    ulimits:
+      memlock: {soft: -1, hard: -1}  # engine page-locks tens of GB of RAM
+    stop_grace_period: 90s         # SIGTERM releases that RAM slowly (avoid exit 137)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+volumes:
+  strata-data:

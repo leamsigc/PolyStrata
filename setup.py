@@ -6502,6 +6502,18 @@ def poly_saved_conv(paths) -> int | str | None:
     return None
 
 
+def conv_cache_args(a, mib: int | None = None) -> list:
+    """The engine's conversation-cache flags: setup's command line when it names them, else the value decided by the
+    ask. Opt-in - nothing when neither is there, so a start is byte-identical to what it was."""
+    mib = a.conversation_cache_mib if a.conversation_cache_mib is not None else mib
+    if not mib:
+        return []
+    out = ["--conversation-cache-mib", str(mib)]
+    if a.conversation_cache_slots:
+        out += ["--conversation-cache-slots", str(a.conversation_cache_slots)]
+    return out
+
+
 def poly_asset() -> str:
     """The ready-made strata-poly's asset for this checkout: the engine and the image encoder are both in it."""
     return POLY_ASSET.format(src=source_hash(ENGINE_SOURCES + VISION_SOURCES))
@@ -6965,7 +6977,8 @@ def poly_setup(a, family, gpu, hip, cuda_tk, multi, ram, data, elsewhere, port, 
 
     # the conversation cache: asked once, then kept as the model's run config has it
     cfg_path = ROOT / f"strata-{tag.lower()}.json"
-    conv = poly_saved_conv([cfg_path, adopted if adopted is not None and adopted.name == cfg_path.name else None])
+    conv = a.conversation_cache_mib if a.conversation_cache_mib is not None else \
+        poly_saved_conv([cfg_path, adopted if adopted is not None and adopted.name == cfg_path.name else None])
     if conv is None:
         say()
         say("  Conversation cache: a coding agent sends several conversations in turn (the main one, its subagents,")
@@ -7127,7 +7140,7 @@ def poly_setup(a, family, gpu, hip, cuda_tk, multi, ram, data, elsewhere, port, 
     if draft:
         args += ["--draft-model", str(draft)]
     if conv:
-        args += ["--conversation-cache-mib", str(conv)]
+        args += conv_cache_args(a, conv)
     if a.vram_reserve_mib is not None:
         args += ["--vram-reserve-mib", str(a.vram_reserve_mib)]
         ok(f"VRAM kept free for other programs: {a.vram_reserve_mib} MiB (--vram-reserve-mib; the expert cache takes "
@@ -7568,6 +7581,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         if vram > 0:
             args += ["--expert-vram", f"{max(vram - 3.0 - a.vram_reserve_mib / 1024, 0):.1f}"]
         ok(f"VRAM kept free for other programs: about {a.vram_reserve_mib} MiB (the experts' share is set lower)")
+    args += conv_cache_args(a)             # parked conversations: only when setup names them
     cfg = {"exe": str(eng / EXE), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "arch": fam["arch"],
            "log": str(ROOT / f"strata-{tag.lower()}.log"), "lib_dirs": lib_dirs, "port": port}
@@ -7881,6 +7895,12 @@ def main() -> int:
     ap.add_argument("--parallel", type=int, metavar="N",
                     help="up to N requests decode together (batch slots, opt-in; default: one at a time, the others "
                          "wait). Each slot takes VRAM from the expert cache; setup says what it recommends")
+    ap.add_argument("--conversation-cache-mib", type=int, metavar="N",
+                    help="the MiB of RAM parked conversations may hold (the engine's --conversation-cache-mib). "
+                         "Default: asked once, then kept as the model's run config has it; given here it wins")
+    ap.add_argument("--conversation-cache-slots", type=int, metavar="N",
+                    help="how many parked conversations at once (the engine's --conversation-cache-slots, default 4); "
+                         "needs --conversation-cache-mib")
     ap.add_argument("--replicas", type=int, metavar="N",
                     help="several GPUs: run N independent engines, each on its own equal group of the chosen cards (2 "
                          "replicas on 4 cards = two 2-card engines), requests spread over them (opt-in; more total "
@@ -8856,6 +8876,7 @@ def main() -> int:
         # the package's profile, with llama.cpp's flags (the engine takes the same ones)
         args += ["--control-vector-scaled", f"{esp}:1.0", "--control-vector-layer-range", "4", "44",
                  "--cvec-mode", "project", "--cvec-dir", "per-layer"]
+    args += conv_cache_args(a)             # parked conversations: only when setup names them
     cfg = {"exe": str(eng / EXE), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "log": str(ROOT / f"strata-{tag.lower()}.log"),
            "lib_dirs": lib_dirs, "port": port}

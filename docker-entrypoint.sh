@@ -34,6 +34,12 @@ GGUF_DIR="${GGUF_DIR:-}"        # a mounted folder with GGUF files you already h
 RESIDENT_BUDGET_GIB="${RESIDENT_BUDGET_GIB:-}"   # UD-Q4_K_XL: GiB of experts kept in RAM (default: setup's pick)
 KV_STREAMING="${KV_STREAMING:-}" # auto | on | off; empty: setup.py's own default (auto)
 CONFIG="${CONFIG:-}"            # a config file to start with (wins over MODEL's /data/config/strata-<model>.json)
+PARALLEL="${PARALLEL:-}"        # up to N requests decode together in batch slots (setup's --parallel, docs/BATCHING.md);
+                                # empty: one at a time, the rest wait in the queue
+CONVERSATION_CACHE_MIB="${CONVERSATION_CACHE_MIB:-}"        # MiB of RAM the parked conversations may hold (setup's
+                                # --conversation-cache-mib); empty: setup asks, and an existing config keeps its answer
+CONVERSATION_CACHE_SLOTS="${CONVERSATION_CACHE_SLOTS:-}"    # how many conversations are parked at once (its
+                                # --conversation-cache-slots, the engine's default 4); needs the MiB above
 
 # setup.py starts the newest strata-*.json it finds, so link in exactly the one
 # this family and model were set up with. The config is the recorded output of
@@ -45,13 +51,15 @@ cfg="$STRATA_DATA/config/strata-$tag.json"
 mkdir -p "$STRATA_DATA/config"
 
 # REINSTALL is only needed to change settings for a model that is already set up
-# (context, vision, KV, host, api_key). Switching between models already on the
-# volume needs no setup pass: their config is already there.
+# (context, vision, KV, host, api_key, parallel, the conversation cache). Switching
+# between models already on the volume needs no setup pass: their config is already
+# there, and the settings below are recorded in it.
 #
-# KV / GPUS / GPU / LAYER_SPLIT are passed only when set, so an unset one keeps
-# setup.py's own default. LOW_RAM is always passed: setup.py measures the PC's RAM
-# from /proc/meminfo, which in a container is the host's total, not the container's
-# limit, so a memory-capped container has to ask for the low-RAM mode itself.
+# KV / GPUS / GPU / LAYER_SPLIT / PARALLEL / CONVERSATION_CACHE_MIB / CONVERSATION_CACHE_SLOTS
+# are passed only when set, so an unset one keeps setup.py's own default (the conversation
+# cache: what setup asks, or what the model's config already has). LOW_RAM is always passed:
+# setup.py measures the PC's RAM from /proc/meminfo, which in a container is the host's total,
+# not the container's limit, so a memory-capped container has to ask for the low-RAM mode itself.
 #
 # Which config the server starts with (#1244): CONFIG when set; else a link in /opt/strata that already points
 # into $STRATA_DATA/config/ (a pod command that picked one by linking); else MODEL's strata-<model>.json.
@@ -72,7 +80,7 @@ elif [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then
   if [ -n "$GGUF_DIR" ]; then
     echo "Setting up $tag from the GGUF files in $GGUF_DIR (the engine is already in the image)."
   else
-    echo "Setting up $tag: downloading the model (~70 GB; the engine is already in the image)."
+    echo "Setting up $tag: downloading the model (size depends on MODEL; the engine is already in the image)."
   fi
   set -- --family "$FAMILY" --model "$MODEL" --context "$CONTEXT" --vision "$VISION" \
     --data-dir "$STRATA_DATA" --host "$HOST" --api-key "$API_KEY" \
@@ -85,6 +93,9 @@ elif [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then
   if [ -n "$RESIDENT_BUDGET_GIB" ]; then set -- "$@" --resident-budget-gib "$RESIDENT_BUDGET_GIB"; fi
   if [ -n "$KV_STREAMING" ]; then set -- "$@" --kv-streaming "$KV_STREAMING"; fi
   if [ -n "$BACKEND" ]; then set -- "$@" --backend "$BACKEND"; fi
+  if [ -n "$PARALLEL" ]; then set -- "$@" --parallel "$PARALLEL"; fi
+  if [ -n "$CONVERSATION_CACHE_MIB" ]; then set -- "$@" --conversation-cache-mib "$CONVERSATION_CACHE_MIB"; fi
+  if [ -n "$CONVERSATION_CACHE_SLOTS" ]; then set -- "$@" --conversation-cache-slots "$CONVERSATION_CACHE_SLOTS"; fi
   .venv/bin/python setup.py --setup --yes "$@"
   [ -e "/opt/strata/strata-$tag.json" ] && { cmp -s "/opt/strata/strata-$tag.json" "$cfg" || cp -f "/opt/strata/strata-$tag.json" "$cfg"; }
   echo "Config: $cfg (from MODEL $MODEL, just set up)"

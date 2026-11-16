@@ -118,7 +118,16 @@ The same idea, in a container (NVIDIA cards).
    `strata-data` volume; the engine is part of the image. Switching between models already on the
    volume needs no setup pass: `-e MODEL=Q2_0 -e FAMILY=coder` picks that model's config. Add
    `-e REINSTALL=1` only to change settings for a model already set up (context, vision, KV, host,
-   api_key, LOW_RAM), since those are recorded in its config.
+   api_key, LOW_RAM, PARALLEL, CONVERSATION_CACHE_MIB, CONVERSATION_CACHE_SLOTS), since those are
+   recorded in its config.
+   `-e PARALLEL=N` asks for N batch slots ([BATCHING.md](BATCHING.md)); `-e CONVERSATION_CACHE_MIB=N` sets the
+   MiB of RAM parked conversations may hold and `-e CONVERSATION_CACHE_SLOTS=N` how many at once
+   (the engine's default 4). Left empty, setup decides: the slots from what the card can hold, the
+   cache from the RAM left after the model.
+   `docker-compose.yml` instead reads a preset file: `MODEL_ENV=.env.qwen` (the default, Qwen3.8-Flash-Next IQ2_XS),
+   `.env.coder`, `.env.clover` or `.env.qwen36`. Set `MODEL_ENV` in Coolify and restart to change models;
+   `API_KEY` still has to come from the environment. Each preset has its own context, slots and cache, and
+   `REINSTALL=1` in a preset runs one setup pass when changing settings for a model already on the volume.
    `MODEL` (with `FAMILY`) selects `/data/config/strata-<model>.json` (the model name in lowercase), so
    `-e MODEL=IQ3_S.1X4-BATCH9` starts `/data/config/strata-iq3_s.1x4-batch9.json`: that is the way to keep
    several configs of one model on one volume. `-e CONFIG=/data/config/my.json` overrides it with any

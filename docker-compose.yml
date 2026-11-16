@@ -3,22 +3,20 @@ services:
     build:
       context: .
       args:
-        CUDA_ARCHITECTURES: "120"  # RTX PRO 4000 Blackwell (sm_120) only -> much faster image build
+        CUDA_ARCHITECTURES: "120"  # RTX PRO 4000 Blackwell SFF (sm_120) only -> much faster image build
         BUILD_VISION: "1"          # picture encoder (runs on GPU)
     expose: ["8080"]               # no ports: -> nothing bypasses Coolify's proxy/firewall
+    # One preset file per model. Set MODEL_ENV in Coolify to pick one, then restart the container.
+    # Presets: .env.qwen (primary/router), .env.coder, .env.clover, .env.qwen36.
+    # All values come from the preset; API_KEY must still be set in Coolify itself.
+    env_file:
+      - ${MODEL_ENV:-.env.qwen}
     environment:
-      FAMILY: "qwen"               # = Qwen3.8-Flash-Next, the stock engine
-      MODEL: "IQ2_XS"              # size setup picks for 64 GB RAM; trained window 262K
-      CONTEXT: "131072"            # 128K inside spec; KV streaming auto-engages at 64K+
-      VISION: "yes"
-      HOST: "0.0.0.0"
-      PORT: "8080"
-      API_KEY: ${API_KEY:?}        # required Coolify var -> the server's --api-key
-      LOW_RAM: "auto"
+      API_KEY: ${API_KEY:?}                            # no fallback: it must come from the environment -> --api-key
     volumes:
       - strata-data:/data          # model + pack + config; chats stay in the browser
     ulimits:
-      memlock: {soft: -1, hard: -1}  # engine page-locks tens of GB of RAM
+      memlock: {soft: -1, hard: -1}  # engine page-locks tens of GB of RAM (the streamed KV needs it too)
     stop_grace_period: 90s         # SIGTERM releases that RAM slowly (avoid exit 137)
     deploy:
       resources:

@@ -1,7 +1,7 @@
 """docker-entrypoint.sh keeps the install config on the /data volume as the one that counts (#1244): with REINSTALL=0
 and a config on the volume, /opt/strata/strata-<tag>.json is a link to it, even when a regular file is already there.
-Runs the real script in a temporary tree with a stub for .venv/bin/python (POSIX sh and symlinks needed: skipped on
-Windows).
+It also passes the setup env vars (PARALLEL, CONVERSATION_CACHE_*) only when they are set. Runs the real script in a
+temporary tree with a stub for .venv/bin/python (POSIX sh and symlinks needed: skipped on Windows).
 
     python -m unittest tools.test_docker_entrypoint
 """
@@ -27,9 +27,10 @@ class Entrypoint(unittest.TestCase):
         self.data = self.tmp / "data"
         (self.opt / ".venv" / "bin").mkdir(parents=True)
         (self.data / "config").mkdir(parents=True)
-        # the stub "python": setup.py --setup writes the config the way setup does; a plain start prints what it would load
+        # the stub "python": setup.py --setup writes the config the way setup does (and prints the args it was given);
+        # a plain start prints what it would load
         stub = self.opt / ".venv" / "bin" / "python"
-        stub.write_text('#!/bin/sh\nif [ "$2" = "--setup" ]; then echo \'{"args": ["from-setup"]}\' > strata-iq3_s.json\n'
+        stub.write_text('#!/bin/sh\nif [ "$2" = "--setup" ]; then echo "SETUP ARGS: $*"; echo \'{"args": ["from-setup"]}\' > strata-iq3_s.json\n'
                         'else echo "STARTED WITH: $(cat strata-iq3_s.json)"; fi\n', encoding="utf-8")
         stub.chmod(0o755)
         script = (ROOT / "docker-entrypoint.sh").read_text(encoding="utf-8").replace("/opt/strata", str(self.opt))
@@ -94,6 +95,24 @@ class Entrypoint(unittest.TestCase):
         out = self.run_entry("0")
         self.assertIn("by-model", out)
         self.assertIn(f"Config: {self.data}/config/strata-iq3_s.json", out)
+
+    def test_parallel_and_conversation_cache_reach_the_setup_pass(self):
+        out = self.run_entry("1", PARALLEL="10", CONVERSATION_CACHE_MIB="8192", CONVERSATION_CACHE_SLOTS="8")
+        self.assertIn("--parallel 10", out)
+        self.assertIn("--conversation-cache-mib 8192", out)
+        self.assertIn("--conversation-cache-slots 8", out)
+
+    def test_an_unset_one_is_not_passed_so_setup_keeps_its_own_default(self):
+        out = self.run_entry("1")                               # the engine's default: one request at a time
+        self.assertNotIn("--parallel", out)
+        self.assertNotIn("conversation-cache", out)             # empty: setup asks, and an existing config keeps it
+
+    def test_they_are_not_repeated_on_a_later_start(self):
+        # recorded in the config on the volume, so the start pass does not pass them again (REINSTALL is how they change)
+        (self.data / "config" / "strata-iq3_s.json").write_text('{"args": ["on-volume"], "parallel": 10}\n')
+        out = self.run_entry("0", PARALLEL="10")
+        self.assertNotIn("--parallel", out)
+        self.assertIn("on-volume", out)
 
     def warning_for(self, flags):
         info = self.tmp / "cpuinfo"

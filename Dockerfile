@@ -28,6 +28,9 @@
 # GGUF_DIR (GGUF files you already have), RESIDENT_BUDGET_GIB, KV_STREAMING,
 # PARALLEL (batch slots, docs/BATCHING.md), CONVERSATION_CACHE_MIB and
 # CONVERSATION_CACHE_SLOTS (parked conversations, docs/DETAILS.md).
+# MODEL_ENV names a preset file (.env.qwen, .env.coder, .env.clover, .env.qwen36, .env.unsloth), which the
+# entry point reads from the image: that is the one switch to set in a platform that builds this Dockerfile
+# and does not use docker-compose.yml (where the same name picks env_file).
 #
 # Only the model files, the prepared pack, the MTP layer and the install config
 # live in the /data volume; the engine is part of the image. PolyStrata loads 32-62 GB
@@ -112,10 +115,11 @@ VOLUME ["/data"]
 EXPOSE 8080
 
 # /health is answered before the API key gate, so it works with or without one.
-# The port only opens after the model loads (1-3 minutes, longer on a first run),
-# so the start period is generous: a too short one marks a still-loading container
-# unhealthy and a restart policy would kill it mid-download.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=600s --retries=3 \
+# The port only opens after the model loads (1-3 minutes once it is on the volume). A FIRST start downloads
+# 58-94 GB (Coder IQ1_M ~58, UD-IQ4_XS ~94) while the container starts, which takes hours on a slow line: the
+# start period covers that, so the container is not killed mid-download and a platform does not call the deploy
+# failed and go back to the earlier one. Later starts are 1-2 minutes and never reach the end of the period.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=6h --retries=3 \
   CMD curl -fs "http://127.0.0.1:${PORT:-8080}/health" || exit 1
 
 ENTRYPOINT ["./docker-entrypoint.sh"]

@@ -114,6 +114,40 @@ class Entrypoint(unittest.TestCase):
         self.assertNotIn("--parallel", out)
         self.assertIn("on-volume", out)
 
+    def test_model_env_reads_the_preset_inside_the_container(self):
+        """A platform that builds the Dockerfile never reads docker-compose.yml: MODEL_ENV is applied here too, so
+        the model it names is the one set up, not the entry point's defaults (qwen / IQ2_XS)."""
+        (self.opt / ".env.coder").write_text("FAMILY=coder\nMODEL=IQ1_M\nPARALLEL=3\nREINSTALL=0\n", encoding="utf-8")
+        out = self.run_entry("0", MODEL_ENV=".env.coder")
+        self.assertIn("Preset: .env.coder (MODEL_ENV)", out)
+        self.assertIn("--family coder --model IQ1_M", out)
+        self.assertIn("--parallel 3", out)
+
+    def test_a_missing_preset_stops_instead_of_serving_the_default_model(self):
+        cfg = self.data / "config" / "strata-coder-iq1_m.json"
+        cfg.write_text('{"args": ["coder"]}\n')
+        r = subprocess.run([SH, str(self.script)],
+                           env=dict(os.environ, STRATA_DATA=str(self.data), MODEL_ENV=".env.coder", REINSTALL="0"),
+                           capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("MODEL_ENV=.env.coder: no such file", r.stderr)
+        self.assertNotIn("coder", r.stdout)                    # it did not fall back to the default model
+
+    def test_a_path_is_refused_and_a_preset_file_is_named(self):
+        r = subprocess.run([SH, str(self.script)],
+                           env=dict(os.environ, STRATA_DATA=str(self.data), MODEL_ENV="/data/config/.env",
+                                    REINSTALL="0"), capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not a path", r.stderr)
+
+    def test_reinstall_from_the_platform_still_asks_for_one_setup_pass(self):
+        """The preset records REINSTALL=0; a REINSTALL=1 beside it is the platform's word, so it is kept."""
+        (self.data / "config" / "strata-iq3_s.json").write_text('{"args": ["on-volume"]}\n')
+        (self.opt / ".env.qwen").write_text("FAMILY=qwen\nMODEL=IQ2_XS\nREINSTALL=0\n", encoding="utf-8")
+        out = self.run_entry("1", MODEL_ENV=".env.qwen")
+        self.assertIn("SETUP ARGS", out)                       # the setup pass ran, as REINSTALL=1 asks
+        self.assertNotIn("on-volume", out)
+
     def warning_for(self, flags):
         info = self.tmp / "cpuinfo"
         info.write_text(f"processor\t: 0\nflags\t\t: {flags}\n")

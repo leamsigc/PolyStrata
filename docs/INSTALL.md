@@ -126,9 +126,16 @@ The same idea, in a container (NVIDIA cards).
    cache from the RAM left after the model.
    `docker-compose.yml` instead reads a preset file: `MODEL_ENV=.env.qwen` (the default, Qwen3.8-Flash-Next IQ2_XS),
    `.env.coder`, `.env.clover`, `.env.qwen36` or `.env.unsloth` (the original model from Unsloth's GGUF).
-   Set `MODEL_ENV` in Coolify and restart to change models;
+   Set `MODEL_ENV` and **redeploy**: a restart only restarts the container and keeps its environment, so it
+   cannot switch the model. The entry point reads the preset itself as well, so `MODEL_ENV` also works where the
+   platform builds the Dockerfile and never reads `docker-compose.yml` (a Dockerfile app type does not);
+   the preset then wins over `FAMILY`/`MODEL`/... set beside it, except `REINSTALL`, which stays as you set it.
+   A `MODEL_ENV` naming a file that is not in the image stops the start with a message instead of serving the
+   default model.
    `API_KEY` still has to come from the environment. Each preset has its own context, slots and cache, and
    `REINSTALL=1` in a preset runs one setup pass when changing settings for a model already on the volume.
+   The first start of a model downloads 58-94 GB while the container runs, so the image's health check allows
+   six hours before it reports the container unhealthy (a platform that watches it must not give up earlier).
    `MODEL` (with `FAMILY`) selects `/data/config/strata-<model>.json` (the model name in lowercase), so
    `-e MODEL=IQ3_S.1X4-BATCH9` starts `/data/config/strata-iq3_s.1x4-batch9.json`: that is the way to keep
    several configs of one model on one volume. `-e CONFIG=/data/config/my.json` overrides it with any

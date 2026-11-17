@@ -6,14 +6,18 @@ services:
         CUDA_ARCHITECTURES: "120"  # RTX PRO 4000 Blackwell SFF (sm_120) only -> much faster image build
         BUILD_VISION: "1"          # picture encoder (runs on GPU)
     expose: ["8080"]               # no ports: -> nothing bypasses Coolify's proxy/firewall
-    # One preset file per model. Set MODEL_ENV in Coolify to pick one, then restart the container.
+    # One preset file per model. Set MODEL_ENV (here, or in Coolify's environment) and redeploy: a restart
+    # only restarts this container and keeps its environment, so it cannot switch the model.
     # Presets: .env.qwen (primary/router), .env.coder, .env.clover, .env.qwen36,
     # .env.unsloth (the original model from Unsloth's GGUF, UD-IQ4_XS).
     # All values come from the preset; API_KEY must still be set in Coolify itself.
+    # MODEL_ENV is passed into the container as well: docker-entrypoint.sh reads the preset itself, so a
+    # platform that builds the Dockerfile and never reads this file picks the same model.
     env_file:
       - ${MODEL_ENV:-.env.qwen}
     environment:
       API_KEY: ${API_KEY:?}                            # no fallback: it must come from the environment -> --api-key
+      MODEL_ENV: ${MODEL_ENV:-}                        # the preset, read again inside the container
     volumes:
       - strata-data:/data          # model + pack + config; chats stay in the browser
     ulimits:

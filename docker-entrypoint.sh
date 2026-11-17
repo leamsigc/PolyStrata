@@ -6,6 +6,33 @@
 set -e
 cd /opt/strata || exit 1
 
+# MODEL_ENV picks a preset file (.env.qwen, .env.coder, .env.clover, .env.qwen36, .env.unsloth).
+# docker-compose.yml hands the same name to env_file, but a platform that builds the Dockerfile and never reads
+# that file would start the defaults (qwen / IQ2_XS) and a model switch would look like it worked when it did
+# not. So the preset is read here too, inside the container, where both ways end. It wins over FAMILY / MODEL /
+# ... given beside it (choosing a preset means choosing its settings), except REINSTALL, which stays as the
+# platform set it, so one re-setup pass can be asked for without editing the preset. A preset that is named but
+# missing stops the start instead of serving the default model.
+if [ -n "${MODEL_ENV:-}" ]; then
+  case "$MODEL_ENV" in
+    */* | . | ..) echo "MODEL_ENV=$MODEL_ENV: name a preset file from the image, not a path." >&2
+                  echo "  The presets are .env.qwen, .env.coder, .env.clover, .env.qwen36 and .env.unsloth." >&2
+                  exit 1 ;;
+  esac
+  preset="./$MODEL_ENV"
+  if [ ! -f "$preset" ]; then
+    echo "MODEL_ENV=$MODEL_ENV: no such file ($preset). The presets in the image are .env.qwen, .env.coder," >&2
+    echo "  .env.clover, .env.qwen36 and .env.unsloth: check it is committed and in the build." >&2
+    exit 1
+  fi
+  reinstall_env="${REINSTALL:-}"
+  set -a
+  . "$preset"
+  set +a
+  if [ -n "$reinstall_env" ]; then REINSTALL="$reinstall_env"; fi
+  echo "Preset: $MODEL_ENV (MODEL_ENV)"
+fi
+
 # #1584: the engine in the image is built with AVX2 CPU kernels. A host CPU without AVX2 (Sandy / Ivy Bridge Xeons,
 # Bulldozer) runs it into an illegal instruction. A warning, not a stop: recommend, never force (the flags file
 # can be wrong in a VM, and a build made on that host may be fine). STRATA_CPUINFO is for the test.

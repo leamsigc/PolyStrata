@@ -125,7 +125,8 @@ The same idea, in a container (NVIDIA cards).
    (the engine's default 4). Left empty, setup decides: the slots from what the card can hold, the
    cache from the RAM left after the model.
    `docker-compose.yml` instead reads a preset file: `MODEL_ENV=.env.qwen` (the default, Qwen3.8-Flash-Next IQ2_XS),
-   `.env.coder`, `.env.clover` or `.env.qwen36`. Set `MODEL_ENV` in Coolify and restart to change models;
+   `.env.coder`, `.env.clover`, `.env.qwen36` or `.env.unsloth` (the original model from Unsloth's GGUF).
+   Set `MODEL_ENV` in Coolify and restart to change models;
    `API_KEY` still has to come from the environment. Each preset has its own context, slots and cache, and
    `REINSTALL=1` in a preset runs one setup pass when changing settings for a model already on the volume.
    `MODEL` (with `FAMILY`) selects `/data/config/strata-<model>.json` (the model name in lowercase), so

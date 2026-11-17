@@ -7,7 +7,8 @@ services:
         BUILD_VISION: "1"          # picture encoder (runs on GPU)
     expose: ["8080"]               # no ports: -> nothing bypasses Coolify's proxy/firewall
     # One preset file per model. Set MODEL_ENV in Coolify to pick one, then restart the container.
-    # Presets: .env.qwen (primary/router), .env.coder, .env.clover, .env.qwen36.
+    # Presets: .env.qwen (primary/router), .env.coder, .env.clover, .env.qwen36,
+    # .env.unsloth (the original model from Unsloth's GGUF, UD-IQ4_XS).
     # All values come from the preset; API_KEY must still be set in Coolify itself.
     env_file:
       - ${MODEL_ENV:-.env.qwen}

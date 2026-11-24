@@ -165,8 +165,8 @@ FALLBACK_FAMILIES = {
                          "Q8_0": {"about": "8-bit throughout: the closest to the model as trained",
                                   "download_gb": 25.5, "ram_gb": 31, "arena_gb": 24.4}}},
     "inkling": {"title": "Inkling 2 Mini",
-                "about": "experimental, on the strata-poly engine: one NVIDIA card, Linux or Windows, or a Mac (beta), "
-                         "reads pictures; a 17.6 GB file, or 13.6 or 9.1 GB",
+                "about": "experimental, on the strata-poly engine: one NVIDIA card, Linux or Windows, or a Mac (beta); "
+                         "AMD cards are not ready (docs/models/inkling.md); reads pictures; a 17.6 GB file, or 13.6 or 9.1 GB",
                 "tag": "inkling-", "engine": "poly", "vision": True, "experimental": True,
                 "models": {"UD-Q4_K_XL": {"about": "4-bit experts (NVFP4, Unsloth Dynamic), 8-bit where they write",
                                           "download_gb": 17.6, "ram_gb": 21, "arena_gb": 15.797846016},
@@ -734,7 +734,7 @@ class Strata:
         # tests: the interpreter that runs setup / the server. The app's Control runs the installer on its own Python.
         self.python_override: str | None = sys.executable if CONTROL else None
         self.health_timeout = 2.0
-        self._non_strata_ports: set[int] = set()        # #6475: unconfigured fallback ports that already answered as non-Strata
+        self._non_strata_ports: set[int] = set()        # #6475: unconfigured fallback ports that already answered as non-PolyStrata
 
     # ---- setup.py's own tables and logic
     def setup_module(self):
@@ -1710,8 +1710,8 @@ class Strata:
             if explicit not in ps and explicit not in self._non_strata_ports:
                 ps.append(explicit)
         elif not ps and not self.no_default_port():
-            # #6475: only probe DEFAULT_PORT (8080) as a fallback when no Strata configs/servers name other ports,
-            # STRATA_NO_DEFAULT_PORT is not set, and 8080 has not already answered as a non-Strata listener.
+            # #6475: only probe DEFAULT_PORT (8080) as a fallback when no PolyStrata configs/servers name other ports,
+            # STRATA_NO_DEFAULT_PORT is not set, and 8080 has not already answered as a non-PolyStrata listener.
             if DEFAULT_PORT not in self._non_strata_ports:
                 ps.append(DEFAULT_PORT)
         return list(dict.fromkeys(int(p) for p in ps))

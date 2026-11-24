@@ -11,7 +11,7 @@ A number or a word is set like any environment variable, for example `STRATA_KVA
 (`terminal/strata-<model>.json`), which the server passes to the engine. The Strata project's Terminal writes it there with
 `strata launch --set NAME=value`.
 
-## Switches you can turn on (343)
+## Switches you can turn on (347)
 
 Off unless you set them. The last column says where each one is described.
 
@@ -74,6 +74,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_EXPERT_V2K` | on / off | NVIDIA and AMD, Intel Arc | [QUANTS.md](QUANTS.md), [QWEN36.md](QWEN36.md) |
 | `STRATA_EXP_MODE` | number | NVIDIA and AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md), [OLDER_GPUS.md](OLDER_GPUS.md), [README.md](bench-results/2026-10-07-v100-decode-kernels/README.md) |
 | `STRATA_F16_RANGE` | on / off | NVIDIA and AMD | [AMD_HIP.md](AMD_HIP.md), [README.md](bench-results/2026-10-04-rdna2-fp16-prompt/README.md), [README.md](bench-results/2026-10-09-community-2x-rx-6900xt-0.1.41/README.md) |
+| `STRATA_FAST_ATTN` | on / off | NVIDIA and AMD | - |
 | `STRATA_FETCH_THREADS` | number | NVIDIA and AMD, Intel Arc | [UNSLOTH_Q4.md](UNSLOTH_Q4.md) |
 | `STRATA_FILE_CACHE_OLD_RULE` | on / off | NVIDIA and AMD | [AMD_HIP.md](AMD_HIP.md) |
 | `STRATA_FILE_RELEASE` | on / off | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md), [README.md](bench-results/2026-10-04-windows-mapped-release/README.md) |
@@ -125,6 +126,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_I8_GRF` | number | Intel Arc | [INTEL_INT8_EXPERTS.md](INTEL_INT8_EXPERTS.md) |
 | `STRATA_I8_MT` | number | Intel Arc | [INTEL_INT8_EXPERTS.md](INTEL_INT8_EXPERTS.md) |
 | `STRATA_I8_WG` | number | Intel Arc | [INTEL_INT8_EXPERTS.md](INTEL_INT8_EXPERTS.md) |
+| `STRATA_INK_FAST_CTRL` | on / off | NVIDIA | - |
 | `STRATA_IO_PF_AHEAD` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_IO_PF_GATE` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md), [release-notes-0.2.0.md](release-notes-0.2.0.md) |
 | `STRATA_IO_PF_GATE_LO` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
@@ -152,7 +154,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_KV_GROW` | on / off | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
 | `STRATA_KV_GROW_HOLD` | number | NVIDIA and AMD | - |
 | `STRATA_KV_HOST_REGISTER` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
-| `STRATA_KV_INT8` | number | NVIDIA and AMD | [Q8_KV.md](Q8_KV.md) |
+| `STRATA_KV_INT8` | number | NVIDIA and AMD | [Q8_KV.md](Q8_KV.md), [inkling.md](models/inkling.md) |
 | `STRATA_KV_PREFETCH` | number | NVIDIA and AMD, Intel Arc | [KV_PREFETCH.md](KV_PREFETCH.md), [README.md](bench-results/README.md), [README.md](bench-results/2026-10-06-community-rtx4090-opt-ins/README.md) |
 | `STRATA_KV_ROT` | on / off | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md), [SPLIT_SERVE.md](SPLIT_SERVE.md) |
 | `STRATA_L3_PF` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
@@ -266,6 +268,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_PREFILL_HELP` | number | NVIDIA and AMD, Intel Arc | [BATCHING.md](BATCHING.md), [GYRO.md](GYRO.md), [MULTI_GPU.md](MULTI_GPU.md) |
 | `STRATA_PREFILL_HELP_FRAC` | number | NVIDIA and AMD, Intel Arc | [MULTI_GPU.md](MULTI_GPU.md) |
 | `STRATA_PREFILL_HOST_PLAN` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md), [release-notes-0.2.0.md](release-notes-0.2.0.md) |
+| `STRATA_PREFILL_IQ1S` | on / off | NVIDIA and AMD | [inkling.md](models/inkling.md) |
 | `STRATA_PREFILL_ISSUER` | number | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
 | `STRATA_PREFILL_LAYER_MAJOR` | on / off | NVIDIA and AMD | [release-notes-0.2.7.md](release-notes-0.2.7.md) |
 | `STRATA_PREFILL_MMQ` | number | NVIDIA and AMD, Intel Arc | [AMD_HIP_PERFORMANCE.md](AMD_HIP_PERFORMANCE.md), [INTEL.md](INTEL.md), [INTEL_INT8_EXPERTS.md](INTEL_INT8_EXPERTS.md) |
@@ -360,8 +363,9 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_VRAM_FREE` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md), [release-notes-0.2.7.md](release-notes-0.2.7.md) |
 | `STRATA_WATCHDOG_S` | number | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
 | `STRATA_WDDM_BUDGET` | number | AMD, Intel Arc | [AMD_HIP.md](AMD_HIP.md) |
+| `STRATA_WDDM_MARGIN_MIB` | number | AMD | [AMD_HIP.md](AMD_HIP.md) |
 
-## Switches that go back to earlier behaviour (111)
+## Switches that go back to earlier behaviour (121)
 
 These behaviours are on by default. Setting the switch returns the earlier behaviour; the notes in the register say which
 version made it the default.
@@ -400,7 +404,12 @@ version made it the default.
 | `STRATA_IGPU_PROMPT_SET` | on / off | NVIDIA and AMD | v0.2.16 | [AMD_HIP.md](AMD_HIP.md), [RADEON_780M.md](RADEON_780M.md), [release-notes-0.2.1.md](release-notes-0.2.1.md) |
 | `STRATA_IL_PAD` | number | NVIDIA and AMD | v0.2.16 | - |
 | `STRATA_INK_FLASH` | on / off | NVIDIA and AMD | - | - |
+| `STRATA_INK_KERNEL_TABLES` | on / off | NVIDIA | - | [inkling.md](models/inkling.md) |
+| `STRATA_INK_MMA75` | on / off | NVIDIA and AMD | - | [inkling.md](models/inkling.md) |
+| `STRATA_INK_PROJECT_MIXED` | on / off | NVIDIA | - | - |
+| `STRATA_IQ3_LANES` | on / off | NVIDIA | - | - |
 | `STRATA_IQ_MT_MIN` | on / off | NVIDIA and AMD, CPU | v0.2.16 | [BATCHING.md](BATCHING.md), [DETAILS.md](DETAILS.md), [OLDER_GPUS.md](OLDER_GPUS.md) |
+| `STRATA_IQ_SLOT_LANES` | on / off | NVIDIA | - | - |
 | `STRATA_KEEP_MAPPING` | on / off | NVIDIA and AMD | v0.2.16 | - |
 | `STRATA_KV_HOST_DMA` | on / off | NVIDIA and AMD, Intel Arc | v0.2.16 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | `STRATA_MEM_CREDIT_INACTIVE` | text | NVIDIA and AMD | v0.2.16 | - |
@@ -435,9 +444,13 @@ version made it the default.
 | `STRATA_PIPELINE_ADAPT_ASYNC` | number | NVIDIA and AMD | v0.2.16 | - |
 | `STRATA_PLE_AUTO_MMAP` | number | NVIDIA and AMD, Intel Arc | v0.2.16 | [DETAILS.md](DETAILS.md) |
 | `STRATA_POLY_BELL` | on / off | NVIDIA | - | - |
+| `STRATA_POLY_EXPERT_TILES` | on / off | NVIDIA and AMD | - | [inkling.md](models/inkling.md) |
+| `STRATA_POLY_HIP_GROUPED` | on / off | NVIDIA and AMD | - | - |
 | `STRATA_POLY_NV4_TILE` | on / off | NVIDIA and AMD | - | - |
+| `STRATA_POLY_WARMUP` | on / off | AMD | - | [AMD_HIP.md](AMD_HIP.md) |
 | `STRATA_PREFILL_CPU_SHARE_AUTO` | text | NVIDIA and AMD | v0.2.17 | [DETAILS.md](DETAILS.md) |
 | `STRATA_PREFILL_LOAN_WALK` | on / off | NVIDIA and AMD | v0.2.16 | - |
+| `STRATA_PREFILL_MXFP4` | on / off | NVIDIA and AMD | - | [inkling.md](models/inkling.md) |
 | `STRATA_PREFILL_STREAM_MIN` | number | NVIDIA and AMD, Intel Arc | v0.2.16 | [AMD_HIP.md](AMD_HIP.md), [STRIX_HALO.md](STRIX_HALO.md), [README.md](bench-results/2026-10-09-community-strix-halo-laptop-70w/README.md) |
 | `STRATA_PREFILL_TAIL_LOAN` | on / off | NVIDIA and AMD | v0.2.16 | - |
 | `STRATA_PROMPT_ATTN_ESIMD` | number | Intel Arc | v0.2.16 | - |
@@ -477,5 +490,6 @@ version made it the default.
 | `STRATA_UMA` | on / off | Intel Arc | - | [INTEL.md](INTEL.md), [INTEL_ARC.md](INTEL_ARC.md) |
 | `STRATA_UMA_PIN_CAP` | on / off | AMD | v0.2.16 | [BATCHING.md](BATCHING.md) |
 | `STRATA_UMA_RESERVE_GIB` | on / off | NVIDIA and AMD | v0.2.16 | [release-notes-0.2.2.md](release-notes-0.2.2.md), [STRIX_HALO.md](STRIX_HALO.md) |
+| `STRATA_WDDM_OTHERS` | number | AMD | - | [AMD_HIP.md](AMD_HIP.md) |
 | `STRATA_WDDM_SHARED_RESERVE_MIB` | number | NVIDIA and AMD | v0.2.17 | - |
 | `STRATA_XN_F16` | on / off | NVIDIA and AMD | v0.2.16 | [DETAILS.md](DETAILS.md) |

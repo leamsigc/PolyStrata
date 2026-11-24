@@ -4381,6 +4381,113 @@ void native_mmvq_many(int ggml_type, const NativeMmvqMany& m, int n_in, void* st
     launch_check();
 }
 
+#if !defined(__HIPCC__)
+namespace {
+
+// native_mmvq_mixed(): blockIdx.x counts the rows of all the matrices, matrix after matrix, and a row's block is the
+// one-row-a-block kernel's for its type (native_small_mmvq_kernel<Q80Block, 8, false>, native_q4_k_mmvq_kernel<false>,
+// ...), through the traits native_mmvq_multi_kernel transcribes from those kernels: the thread-to-block mapping, the
+// per-thread order and the reduction are theirs, so each output has the bits of its matrix's single launch.
+struct MmvqMixed {
+    MmvqMany a;
+    int kind[8];   // 0 Q8_0, 1 Q4_K, 2 Q5_K, 3 Q6_K
+};
+
+template<typename F>
+__device__ __forceinline__ void mixed_row(const MmvqMixed& m, int j, int n_in) {
+    const auto* __restrict__ w = static_cast<const typename F::Block*>(m.a.w[j]);
+    const Q81Block* __restrict__ x = m.a.x[j];
+    const int tid = WARP * int(threadIdx.y) + int(threadIdx.x);
+    const int row = int(blockIdx.x) - m.a.first[j];
+    const int blocks_per_row = n_in / F::DIV;
+    float tmp = 0.0f;
+    for (int kbx = tid / F::T; kbx < blocks_per_row; kbx += F::BPI) {
+        const int kqs = F::kqs(tid);
+        tmp += F::apply(F::load(w + std::size_t(row) * blocks_per_row + kbx, kqs), x + kbx * F::KBY, kqs);
+    }
+    __shared__ float partial[WARPS - 1][WARP];
+    if (threadIdx.y > 0) partial[threadIdx.y - 1][threadIdx.x] = tmp;
+    __syncthreads();
+    if (threadIdx.y > 0) return;
+#pragma unroll
+    for (int l = 0; l < WARPS - 1; ++l) tmp += partial[l][threadIdx.x];
+    tmp = warp_sum(tmp);
+    if (threadIdx.x == 0) m.a.y[j][row] = tmp;
+}
+
+__launch_bounds__(WARPS * WARP, 1)
+__global__ void native_mmvq_mixed_kernel(MmvqMixed m, int n_in) {
+    int j = 0;
+    while (int(blockIdx.x) >= m.a.first[j + 1]) ++j;
+    switch (m.kind[j]) {   // the same for the whole block: the barrier in mixed_row() is reached by every thread
+    case 0: mixed_row<SmallTraits<Q80Block, 8>>(m, j, n_in); break;
+    case 1: mixed_row<Q4KTraits>(m, j, n_in); break;
+    case 2: mixed_row<Q5KTraits>(m, j, n_in); break;
+    default: mixed_row<Q6KTraits>(m, j, n_in); break;
+    }
+}
+
+// Where native_mmvq() of one column runs the one-row-a-block kernel for this type and width: its kind, else -1.
+template<typename F>
+int mixed_kind_of(int kind, int n_in) { return n_in % F::DIV == 0 && n_in / F::DIV >= F::BPI ? kind : -1; }
+
+}  // namespace
+#endif
+
+#if !defined(__HIPCC__)
+namespace {
+// native_mmvq_mixed()'s launch for these, or false: kinds and row bounds into a.
+bool mixed_args(const int* types, const NativeMmvqMany& m, int n_in, MmvqMixed& a) {
+    if (!types || m.count < 1 || m.count > 8 || n_in <= 0) return false;
+    a = MmvqMixed{};
+    for (int j = 0; j < m.count; ++j) {
+        if (!m.w[j] || !m.x_q8_1[j] || !m.y[j] || m.n_out[j] <= 0) return false;
+        int kind = -1;
+        switch (types[j]) {   // a repacked matrix (STRATA_Q8_PACKED, STRATA_Q6_PACKED) goes through its own kernel
+        case 8: kind = q8_packed_registry().count(m.w[j]) ? -1 : mixed_kind_of<SmallTraits<Q80Block, 8>>(0, n_in); break;
+        case 12: kind = mixed_kind_of<Q4KTraits>(1, n_in); break;
+        case 13: kind = mixed_kind_of<Q5KTraits>(2, n_in); break;
+        case 14: kind = q6_packed_registry().count(m.w[j]) ? -1 : mixed_kind_of<Q6KTraits>(3, n_in); break;
+        default: break;
+        }
+        if (kind < 0) return false;
+        a.kind[j] = kind;
+        a.a.w[j] = m.w[j];
+        a.a.x[j] = static_cast<const Q81Block*>(m.x_q8_1[j]);
+        a.a.y[j] = m.y[j];
+        a.a.first[j + 1] = a.a.first[j] + m.n_out[j];
+    }
+    for (int j = m.count; j < 8; ++j) a.a.first[j + 1] = a.a.first[m.count];
+    return true;
+}
+}  // namespace
+#endif
+
+bool native_mmvq_mixed_fits(const int* types, const NativeMmvqMany& m, int n_in) {
+#if defined(__HIPCC__)
+    (void) types, (void) m, (void) n_in;
+    return false;   // HIP's single launches of these types take other kernels (rdna_mmvq.cu, the wave layout)
+#else
+    MmvqMixed a;
+    return mixed_args(types, m, n_in, a);
+#endif
+}
+
+bool native_mmvq_mixed(const int* types, const NativeMmvqMany& m, int n_in, void* stream) {
+#if defined(__HIPCC__)
+    (void) types, (void) m, (void) n_in, (void) stream;
+    return false;
+#else
+    MmvqMixed a;
+    if (!mixed_args(types, m, n_in, a)) return false;
+    validate_stream(stream);
+    native_mmvq_mixed_kernel<<<unsigned(a.a.first[m.count]), dim3(WARP, WARPS), 0, static_cast<cudaStream_t>(stream)>>>(
+        a, n_in);
+    launch_check();
+    return true;
+#endif
+}
+
 void native_q8_0_mmvq(const void* weights, const void* x_q8_1, float* y,
                        int n_in, int n_out, int ncols, void* stream) {
     if (q8_packed_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream)) return;   // STRATA_Q8_PACKED=1 tensors

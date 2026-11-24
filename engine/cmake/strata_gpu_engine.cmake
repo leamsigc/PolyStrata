@@ -965,8 +965,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME gfx906_gdn_rec_head COMMAND gfx906_gdn_rec_head)
     set_tests_properties(gfx906_gdn_rec_head PROPERTIES TIMEOUT 120)
   endif()
-  if(STRATA_ENABLE_CUDA)
-    # the Volta prompt experts (gemm_iq_f16_grouped, STRATA_PF_WMMA) against a double reference; skipped below sm_70
+  if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
+    # the Volta prompt experts (gemm_iq_f16_grouped, STRATA_PF_WMMA; strata-poly's on RDNA3/RDNA4) against a double
+    # reference; skipped below sm_70 and on an AMD card without the matrix cores
     add_executable(pf_wmma_parity src/kernels/pf_wmma_parity.cpp)
     target_include_directories(pf_wmma_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(pf_wmma_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})

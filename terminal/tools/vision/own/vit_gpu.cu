@@ -1394,13 +1394,16 @@ struct VitGpuImpl {
         if (!alloc(dst, h.size(), err, true)) return false;
         return cudaMemcpy(dst, h.data(), h.size() * 4, cudaMemcpyHostToDevice) == cudaSuccess || (err = "GPU copy failed", false);
     }
-    // matrices of one type and width, their rows one after the other in one device matrix (Gemma 4's q, k, v and its gate, up: one product each)
+    // matrices of one width, their rows one after the other in one device matrix (Gemma 4's q, k, v and its gate, up: one product each).
+    // Their types may differ (#154: a Q4_0 mmproj made by hand had v in another type than q): the product is in one 16-bit kind either way.
     bool upload_matrix(DevW& w, const Gguf& gg, const std::vector<std::string>& names, std::string& err) {
         std::vector<const GgufTensorInfo*> ts;
+        bool all_f16 = true;
         for (const std::string& nm : names) {
             const GgufTensorInfo* t = gg.tensor(nm);
             if (!t || t->ne.size() != 2) { err = "the mmproj file lacks the matrix " + nm; return false; }
-            if (!ts.empty() && (t->type != ts[0]->type || t->ne[0] != ts[0]->ne[0])) { err = "the matrices " + names[0] + " and " + nm + " differ in type or width"; return false; }
+            if (!ts.empty() && t->ne[0] != ts[0]->ne[0]) { err = "the matrices " + names[0] + " and " + nm + " differ in width"; return false; }
+            all_f16 = all_f16 && t->type == GT_F16;
             ts.push_back(t);
         }
         if (ts.size() == 1) return upload_matrix(w, gg, names[0], err);
@@ -1410,13 +1413,13 @@ struct VitGpuImpl {
         for (const GgufTensorInfo* t : ts) { w.rows += (int) t->ne[1]; n += (size_t) t->nelem(); }
         std::vector<unsigned char> raw(n * 2);
         size_t at = 0;
-        if (ts[0]->type == GT_F16) {      // as stored
+        if (all_f16) {                    // as stored
             for (const GgufTensorInfo* t : ts) {
                 if (!gg.read_raw(*t, raw.data() + at, err)) return false;
                 at += (size_t) t->nelem() * 2;
             }
             w.kind = K_F16;
-        } else {                          // any other type through float32: F16 when every weight is in its range, else BF16
+        } else {                          // any other type or a mix through float32: F16 when every weight is in its range, else BF16
             std::vector<float> f(n);
             for (const GgufTensorInfo* t : ts) {
                 if (!gg.read_f32(*t, f.data() + at, err)) return false;

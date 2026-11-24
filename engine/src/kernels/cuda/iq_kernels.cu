@@ -5828,10 +5828,187 @@ __global__ void __launch_bounds__(128) mmvq_slots_kernel(S slots, size_t row_byt
     if (lane == 0) at.y[row] = s;
 }
 
+#if !defined(__HIPCC__)
+// IQ3_S and IQ3_XXS rows for MmvqSlots::lanes (Inkling 2's cached experts; CUDA only).  mmvq_slots_kernel gives a
+// row a warp: a 2304-value row is 72 calls, so the third pass over the lanes keeps 8 of 32 busy.  Here a warp takes
+// R rows as one run of R x C calls (C = calls a row), lane p taking call 32 i + p of the run.  Row r's calls
+// c = L (mod 32) all land on lane (L + r C) mod 32, in increasing c: that lane holds row_dot's lane-L sum, term for
+// term.  A shuffle moves it back to lane L before the same warp_sum, so a row's sum is mmvq_slots_kernel's to the
+// bit.  The grid is read from shared memory, and the sign bytes are made by a multiply (nibble bit k -> byte k) and
+// applied with xor + add: the same integers as __vcmpne4 / __vsub4 (every grid byte is at least 1, so no byte
+// carries).  Both ideas from merbanan's inkling2-turing decode kernels (his Strata branch); this is our own code.
+// The same bits hold where the compiler contracts both kernels' float steps alike: checked on sm_75 (Turing) and
+// sm_89 (Ada).  On sm_120 (CUDA 12.8) poly_iq3_lanes_test finds about half of the outputs one rounding apart, so
+// there, and on the cards not checked, mmvq_slots_kernel stays the default.  STRATA_IQ3_LANES=0 keeps
+// mmvq_slots_kernel on every card, =1 takes the lanes kernel on every card.
+// ponytail: decided once a process, by the card current at the first launch; a split over unlike cards follows it.
+bool iq3_lanes_on() {
+    static const bool on = [] {
+        if (const char* v = std::getenv("STRATA_IQ3_LANES"); v && *v) return v[0] != '0';
+        int dev = 0, major = 0, minor = 0;
+        if (cudaGetDevice(&dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess)
+            return false;
+        return (major == 7 && minor == 5) || (major == 8 && minor == 9);
+    }();
+    return on;
+}
+// sign bits b0..b3 -> 0x01 in the bytes whose bit is set
+__device__ __forceinline__ uint32_t sign_ones(uint32_t nibble) { return (nibble * 0x00204081u) & 0x01010101u; }
+__device__ __forceinline__ int signed_grid(uint32_t g, uint32_t ones) { return (int) ((g ^ (ones * 0xFFu)) + ones); }
+template<int TY> struct Iq3Lane;
+template<> struct Iq3Lane<21> {   // vec_dot_iq3_s_q8_1
+    static constexpr int GRID = 512;
+    __device__ static const uint32_t* src() { return iq3s_grid; }
+    __device__ static float dot(const uint8_t* row, const block_q8_1* bq8_1, int kbx, int iqs, const uint32_t* g) {
+        const block_iq3_s* bq3 = (const block_iq3_s*) row + kbx;
+        const int2 qs_packed = make_int2(get_int_b2(bq3->qs, iqs + 0), get_int_b2(bq3->qs, iqs + 1));
+        const uint8_t* qs = (const uint8_t*) &qs_packed;
+        const int qh = bq3->qh[iqs / 2];
+        const uint32_t sg = (uint32_t) get_int_b2(bq3->signs, iqs / 2);
+        int sumi = 0;
+#pragma unroll
+        for (int l0 = 0; l0 < 8; l0 += 2) {
+            const uint32_t g0 = g[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)], g1 = g[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)];
+            const int grid_l = signed_grid(g0, sign_ones((sg >> (4 * l0)) & 0xF));
+            const int grid_h = signed_grid(g1, sign_ones((sg >> (4 * l0 + 4)) & 0xF));
+            sumi = ggml_cuda_dp4a(grid_l, get_int_b4(bq8_1[iqs / 2].qs, l0 + 0), sumi);
+            sumi = ggml_cuda_dp4a(grid_h, get_int_b4(bq8_1[iqs / 2].qs, l0 + 1), sumi);
+        }
+        sumi *= 1 + 2 * ((bq3->scales[iqs / 4] >> ((iqs << 1) & 0x04)) & 0x0F);
+        const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs / 2].ds);
+        return d * sumi;
+    }
+};
+template<> struct Iq3Lane<18> {   // vec_dot_iq3_xxs_q8_1
+    static constexpr int GRID = 256;
+    __device__ static const uint32_t* src() { return iq3xxs_grid; }
+    __device__ static float dot(const uint8_t* row, const block_q8_1* bq8_1, int kbx, int iqs, const uint32_t* g) {
+        const block_iq3_xxs* bq3 = (const block_iq3_xxs*) row + kbx;
+        const int2 q3_packed = make_int2(get_int_b2(bq3->qs, iqs), get_int_b2(bq3->qs, iqs + 1));
+        const uint8_t* q3 = (const uint8_t*) &q3_packed;
+        const uint32_t aux32 = get_int_b2(bq3->qs, QK_K / 16 + iqs / 2);
+        int sumi = 0;
+#pragma unroll
+        for (int l0 = 0; l0 < 8; l0 += 2) {
+            const uint32_t v = (aux32 >> (7 * l0 / 2)) & 0x7F, s8 = v ^ ((__popc(v) & 1) << 7);   // unpack_ksigns' byte
+            const int grid_l = signed_grid(g[q3[l0 + 0]], sign_ones(s8 & 0xF));
+            const int grid_h = signed_grid(g[q3[l0 + 1]], sign_ones(s8 >> 4));
+            sumi = ggml_cuda_dp4a(grid_l, get_int_b4(bq8_1[iqs / 2].qs, l0 + 0), sumi);
+            sumi = ggml_cuda_dp4a(grid_h, get_int_b4(bq8_1[iqs / 2].qs, l0 + 1), sumi);
+        }
+        const int ls = aux32 >> 28;
+        sumi = (ls * sumi + sumi / 2) / 2;
+        const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs / 2].ds);
+        return d * sumi;
+    }
+};
+
+template<int TY, int R, typename S>
+__global__ void __launch_bounds__(128) mmvq_slots_iq3_kernel(S slots, size_t row_bytes, int n_in, int n_out) {
+    using T = Iq3Lane<TY>;
+    __shared__ uint32_t s_grid[T::GRID];
+    for (int i = threadIdx.y * 32 + threadIdx.x; i < T::GRID; i += 128) s_grid[i] = T::src()[i];
+    __syncthreads();
+    const int row0 = (blockIdx.x * 4 + threadIdx.y) * R;
+    if (row0 >= n_out) return;
+    const SlotPtrs at = slot_ptrs(slots, int(blockIdx.y));
+    const int lane = threadIdx.x, C = (n_in / 256) * 8, rows = min(R, n_out - row0);
+    const uint8_t* w = (const uint8_t*) at.w + (size_t) row0 * row_bytes;
+    const block_q8_1* x = (const block_q8_1*) at.x;
+    float acc[R];
+#pragma unroll
+    for (int q = 0; q < R; ++q) acc[q] = 0.0f;
+    for (int f = lane; f < rows * C; f += 32) {
+        const int r = f / C, c = f - r * C, kbx = c / 8, iqs = 2 * (c % 8);
+        const float v = T::dot(w + (size_t) r * row_bytes, x + kbx * 8, kbx, iqs, s_grid);
+#pragma unroll
+        for (int q = 0; q < R; ++q)
+            if (q == r) acc[q] += v;
+    }
+#pragma unroll
+    for (int q = 0; q < R; ++q) {
+        float v = __shfl_sync(0xffffffffu, acc[q], (lane + q * C) & 31);
+        v = warp_sum(v);
+        if (q < rows && lane == 0) at.y[row0 + q] = v;
+    }
+}
+#endif
+
+#if !defined(__HIPCC__)
+// mmvq_slots_kernel for MmvqSlots::lanes / MmvqIds::lanes (Inkling 2's cached experts, CUDA) in the formats whose
+// codebook stage_iq_grid puts in shared memory (IQ2_XXS, IQ2_XS, IQ2_S, IQ1_S, IQ1_M).  mmvq_slots_kernel reads the
+// codebook from global memory and gives a block 4 rows; here a block of 4 warps stages it once and each warp takes
+// kLaneRows rows, so the copy is paid for 32 rows.  A row is row_dot_multi's for one column, which is row_dot's
+// arithmetic in its order (the same calls, lane-strided the same way, the same warp_sum), and the staged words are the
+// table's: mmvq_slots_kernel's bits.  STRATA_IQ_SLOT_LANES=0, STRATA_OLD_IQ_MMVQ=1 or STRATA_IQ_STAGE_GRID=0 keep
+// mmvq_slots_kernel (and so do the cards slot_lanes_on() has not been checked on).  Ported from our PR 200's a4fa51021 / 2b5363d88.
+constexpr int kLaneRows = 8;
+template<int TY, typename S>
+__global__ void __launch_bounds__(128) mmvq_slots_staged_kernel(S slots, size_t row_bytes, int n_in, int n_out) {
+    STRATA_SHARED_ALIGN16_U32(s_grid_buf, IqGridWords<TY, true>::value);
+    const uint32_t* s_grid = stage_iq_grid<TY, true>(s_grid_buf, threadIdx.y * 32 + threadIdx.x, 128);
+    const SlotPtrs at = slot_ptrs(slots, int(blockIdx.y));
+    const int lane = threadIdx.x, nb = n_in / Fmt<TY>::qk;
+    const int off[1] = {0};
+    for (int r = 0; r < kLaneRows; ++r) {
+        const int row = (blockIdx.x * 4 + threadIdx.y) * kLaneRows + r;
+        if (row >= n_out) return;   // whole warps, and no barrier after the staging
+        float s[1];
+        row_dot_multi<TY, 1, true, true>((const uint8_t*) at.w + (size_t) row * row_bytes, (const block_q8_1*) at.x,
+                                         off, 1, nb, lane, s, s_grid);
+        if (lane == 0) at.y[row] = s[0];
+    }
+}
+// The same bits are shown on sm_75 (Turing; poly_iq_slot_lanes_test), so unset it is on there only, and the other
+// cards keep mmvq_slots_kernel until they are checked, as iq3_lanes_on() does for the IQ3 kernels.
+// STRATA_IQ_SLOT_LANES=0 keeps mmvq_slots_kernel on every card, =1 takes the lane kernel on every card.
+// Decided once a process, by the card current at the first launch.
+bool slot_lanes_on() {
+    static const bool on = [] {
+        if (const char* v = std::getenv("STRATA_IQ_SLOT_LANES"); v && *v) return v[0] != '0';
+        int dev = 0, major = 0, minor = 0;
+        if (cudaGetDevice(&dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess)
+            return false;
+        return major == 7 && minor == 5;
+    }();
+    return on;
+}
+#endif
+
 template<typename S>
 void slots_of(int t, const S& slots, int count, int n_in, int n_out, void* stream) {
     const size_t rb = iq_row_bytes(t, n_in);
     const dim3 grid((unsigned) ((n_out + 3) / 4), (unsigned) count), block(32, 4);
+#if !defined(__HIPCC__)
+    if ((t == 21 || t == 18) && slots.lanes && !g_old_kernels && iq3_lanes_on()) {
+        constexpr int R = 4;   // 72 calls a 2304 row: 4 rows are 9 full passes over the lanes
+        const dim3 g4((unsigned) ((n_out + 4 * R - 1) / (4 * R)), (unsigned) count);
+        if (t == 21) mmvq_slots_iq3_kernel<21, R, S><<<g4, block, 0, (cudaStream_t) stream>>>(slots, rb, n_in, n_out);
+        else mmvq_slots_iq3_kernel<18, R, S><<<g4, block, 0, (cudaStream_t) stream>>>(slots, rb, n_in, n_out);
+        check("iq_mmvq_slots");
+        return;
+    }
+#endif
+#if !defined(__HIPCC__)
+    if ((t == 16 || t == 17 || t == 22 || t == 29 || t == 19) && slots.lanes && !g_old_kernels && g_stage_grid &&
+        slot_lanes_on()) {
+        const dim3 g8((unsigned) ((n_out + 4 * kLaneRows - 1) / (4 * kLaneRows)), (unsigned) count);
+        const cudaStream_t s = (cudaStream_t) stream;
+        switch (t) {
+        case 16: mmvq_slots_staged_kernel<16, S><<<g8, block, 0, s>>>(slots, rb, n_in, n_out); break;
+        case 17: mmvq_slots_staged_kernel<17, S><<<g8, block, 0, s>>>(slots, rb, n_in, n_out); break;
+        case 22: mmvq_slots_staged_kernel<22, S><<<g8, block, 0, s>>>(slots, rb, n_in, n_out); break;
+        case 29: mmvq_slots_staged_kernel<29, S><<<g8, block, 0, s>>>(slots, rb, n_in, n_out); break;
+        default: mmvq_slots_staged_kernel<19, S><<<g8, block, 0, s>>>(slots, rb, n_in, n_out); break;
+        }
+        check("iq_mmvq_slots");
+        return;
+    }
+#endif
     switch (t) {
 #define STRATA_MMVQ(T) case T: mmvq_slots_kernel<T, S><<<grid, block, 0, (cudaStream_t) stream>>>(slots, rb, n_in, n_out); break;
         STRATA_MMVQ_FMTS(STRATA_MMVQ)
@@ -7717,8 +7894,100 @@ int hash_slots(const LayerVram& L, const unsigned long long* slot_ptrs, int64_t 
 // ---- Volta prompt experts (STRATA_PF_WMMA): a group's experts as one launch of FP16 tensor-core tiles, the weights
 // dequantized into shared memory by dq_dispatch (the FP16 path's own formulas), the activations FP16, FP32 sums.
 // Replaces MMQ's dp4a products on sm_70, and the FP16 path's dequantize-to-global + one cuBLAS call per expert.
+// On HIP the same kernel runs on RDNA3/RDNA4's matrix cores (v_wmma_f32_16x16x16_f16, wave32) through the few
+// nvcuda::wmma calls below, written for the two lane layouts; the tiles that fit 64 KiB of LDS (WK 128) only, which
+// there take IQ4_NL, NVFP4 and Q2_0 rows of any whole 128s and Q8_0's.
 #if !defined(__HIPCC__)
 #include <mma.h>
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700   // the sm_60 pass of a multi-arch build has no nvcuda::wmma (the host never launches these there)
+#define STRATA_WG_TC 1
+#else
+#define STRATA_WG_TC 0
+#endif
+#define STRATA_WG_NS nvcuda
+#else
+// The device pass's architectures with the instructions: the list gfx_arch.hpp's gfx_arch_is_gfx11_wmma /
+// gfx_arch_is_gfx12_wmma match at run time (another AMD card keeps the BLAS path and compiles the kernel empty).
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || \
+    defined(__gfx1151__)
+#define STRATA_WG_TC 1
+#define STRATA_WG_GFX12 0
+#elif defined(__gfx1200__) || defined(__gfx1201__)
+#define STRATA_WG_TC 1
+#define STRATA_WG_GFX12 1
+#else
+#define STRATA_WG_TC 0
+#endif
+#define STRATA_WG_NS strata_wg_hip
+#if STRATA_WG_TC
+// 16 x 16 x 16 halves to FP32.  A wave's lane l holds row l % 16 of A (row-major) and column l % 16 of B (col-major),
+// read the same way: on gfx11 all 16 values of K (lanes l and l + 16 the same), on gfx12 the 8 values from
+// (l / 16) * 8.  Its 8 sums are D[2 i + l / 16][l % 16] on gfx11 and D[(l / 16) * 8 + i][l % 16] on gfx12.
+namespace strata_wg_hip::wmma {
+struct matrix_a {};
+struct matrix_b {};
+struct accumulator {};
+struct row_major {};
+struct col_major {};
+enum layout_t { mem_row_major };
+#if STRATA_WG_GFX12
+typedef _Float16 wg_hv __attribute__((ext_vector_type(8)));
+#else
+typedef _Float16 wg_hv __attribute__((ext_vector_type(16)));
+#endif
+typedef float wg_fv __attribute__((ext_vector_type(8)));
+template <class Use, int M, int N, int K, class T = float, class L = void>
+struct fragment {
+    wg_hv x;
+};
+template <int M, int N, int K, class T, class L>
+struct fragment<accumulator, M, N, K, T, L> {
+    wg_fv x;
+};
+__device__ __forceinline__ int wg_lane() { return (int) (threadIdx.x & 31); }
+template <int M, int N, int K, class T>
+__device__ __forceinline__ void fill_fragment(fragment<accumulator, M, N, K, T>& f, float v) {
+#pragma unroll
+    for (int i = 0; i < 8; ++i) f.x[i] = v;
+}
+// (A row-major and B col-major: both a lane's row l % 16 of the pointer)
+template <class Use, class L>
+__device__ __forceinline__ void load_matrix_sync(fragment<Use, 16, 16, 16, __half, L>& f, const __half* p, unsigned ld) {
+    const int l = wg_lane();
+    // (16-byte reads: the tiles' rows and steps are whole 16 bytes)
+#if STRATA_WG_GFX12
+    const uint4 q = *reinterpret_cast<const uint4*>(p + (size_t) (l % 16) * ld + (l / 16) * 8);
+    __builtin_memcpy(&f.x, &q, sizeof f.x);
+#else
+    const uint4* r = reinterpret_cast<const uint4*>(p + (size_t) (l % 16) * ld);
+    const uint4 q[2] = {r[0], r[1]};
+    __builtin_memcpy(&f.x, q, sizeof f.x);
+#endif
+}
+template <class LA, class LB>
+__device__ __forceinline__ void mma_sync(fragment<accumulator, 16, 16, 16, float>& d, const fragment<matrix_a, 16, 16, 16, __half, LA>& a,
+                                         const fragment<matrix_b, 16, 16, 16, __half, LB>& b,
+                                         const fragment<accumulator, 16, 16, 16, float>& c) {
+#if STRATA_WG_GFX12
+    d.x = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a.x, b.x, c.x);
+#else
+    d.x = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a.x, b.x, c.x);
+#endif
+}
+__device__ __forceinline__ void store_matrix_sync(float* p, const fragment<accumulator, 16, 16, 16, float>& f, unsigned ld, layout_t) {
+    const int l = wg_lane();
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+#if STRATA_WG_GFX12
+        p[(size_t) ((l / 16) * 8 + i) * ld + l % 16] = f.x[i];
+#else
+        p[(size_t) (2 * i + l / 16) * ld + l % 16] = f.x[i];
+#endif
+    }
+}
+}  // namespace strata_wg_hip::wmma
+#endif
+#endif
 namespace strata::kernels {
 namespace {
 constexpr int WG_BM = 64, WG_BN = 128, WG_THREADS = 256, WG_XK = 128, WG_MT = 4;
@@ -7732,8 +8001,8 @@ __global__ void __launch_bounds__(WG_THREADS) gemm_iq_f16_grouped_kernel(int ty,
                                                                          const __half* __restrict__ X, int ldx,
                                                                          const int32_t* __restrict__ bounds, int ch_per_e,
                                                                          float* __restrict__ Y, int ldy) {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700   // the sm_60 pass of a multi-arch build has no nvcuda::wmma (the host never launches these there)
-    using namespace nvcuda;
+#if STRATA_WG_TC
+    using namespace STRATA_WG_NS;
     constexpr int LDW = WK + 8, LDX = WG_XK + 8;
     extern __shared__ __align__(16) unsigned char wg_smem[];
     __half* sw = reinterpret_cast<__half*>(wg_smem);            // [BN][LDW]
@@ -7803,6 +8072,18 @@ __global__ void __launch_bounds__(WG_THREADS) gemm_iq_f16_grouped_kernel(int ty,
                     o[s * 16 + k] = cvt<__half>((float) kvalues_fp4[byte & 0x0F] * d);
                     o[s * 16 + k + 8] = cvt<__half>((float) kvalues_fp4[byte >> 4] * d);
                 }
+            }
+        } else if constexpr (WK == 128 && !Q20) {
+            // Q8_0 (a HIP build only: its 64 KiB of LDS take no WK 256 tile): one thread per (row, 64-value half) of
+            // the 128-value window, two blocks of 32, each value dq_q8_0()'s
+            const int r = tid >> 1, half = tid & 1;
+            const block_q8_0* bp = reinterpret_cast<const block_q8_0*>(we + (size_t) (n0 + r) * row_bytes) + k0 / 32 + half * 2;
+            __half* o = sw + r * LDW + half * 64;
+#pragma unroll
+            for (int bl = 0; bl < 2; ++bl) {
+                const float d = __half2float(bp[bl].d);
+#pragma unroll
+                for (int j = 0; j < 32; ++j) o[bl * 32 + j] = cvt<__half>((float) bp[bl].qs[j] * d);
             }
         } else if constexpr (!Q20) {
             for (int r = warp; r < WG_BN; r += WG_THREADS / 32)
@@ -7874,6 +8155,7 @@ __global__ void __launch_bounds__(WG_THREADS) gemm_iq_f16_grouped_kernel(int ty,
 #endif
 }
 
+#if !defined(__HIPCC__)   // (CUDA only)
 // ---- STRATA_PF_WMMA2=1 (opt-in): IQ2_S gate/up and IQ4_NL down, tiled like a Volta MoE kernel in the
 // PR author's own unpublished llama.cpp patches.
 // A block: W2_RB = 128 weight rows of one expert x W2_CB = 64 of its sorted rows, K stages of W2_KT = 64. Thread t dequantizes
@@ -8077,11 +8359,30 @@ bool w2_on() {
     static const bool v = [] { const char* e = std::getenv("STRATA_PF_WMMA2"); return e && e[0] == '1'; }();
     return v;
 }
+#else
+// The current card has the instructions the device pass built the tiles for, and LDS for `bytes` a block
+bool wg_card(size_t bytes) {
+    // a device's, in one word: 0 not yet asked, -1 no instructions, else its LDS a block (read by any thread at once)
+    static std::atomic<long long> known[64];
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    long long v = known[dev].load(std::memory_order_acquire);
+    if (v == 0) {
+        cudaDeviceProp p;
+        const bool ok = cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
+                        (gfx_arch_is_gfx11_wmma(p.gcnArchName) || gfx_arch_is_gfx12_wmma(p.gcnArchName)) && p.sharedMemPerBlock > 0;
+        v = ok ? (long long) p.sharedMemPerBlock : -1;
+        known[dev].store(v, std::memory_order_release);
+    }
+    return v > 0 && bytes <= (size_t) v;
+}
+#endif
 }  // namespace
 
 bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, int K, const void* X, int ldx,
                          const int32_t* bounds, int n_experts, int max_rows, float* Y, int ldy, void* stream) {
     if (n_out % WG_BN != 0 || n_experts <= 0 || max_rows <= 0 || ldy % 4 != 0) return false;
+#if !defined(__HIPCC__)
     {   // the tiles are tensor-core kernels: a pre-Volta card has no body for them (the sm_60 pass compiles them empty)
         int cur = 0, major = 0;
         if (cudaGetDevice(&cur) != cudaSuccess || cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, cur) != cudaSuccess ||
@@ -8103,15 +8404,28 @@ bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, 
             return cudaGetLastError() == cudaSuccess;
         }
     }
+#endif
     const bool q20 = ty == 42;
+#if !defined(__HIPCC__)
     const bool nl = ty == 20 && K % 256 != 0;   // IQ4_NL down (K=640): there is no WK=256 path for this K
     const bool nv4 = ty == 40 && K % 256 != 0;   // NVFP4 down (Inkling 2's K=1,152): the same
-    if (q20 || nl || nv4 ? K % 128 != 0 : (K % 256 != 0 || !dq_supported(ty))) return false;
+    constexpr bool q80 = false;
+#else
+    // RDNA: the WK 128 lanes for any K of whole 128s (the WK 256 tile does not fit the LDS), and Q8_0's lane: Inkling 2
+    // Mini's experts (gate|up K = 2,304, down K = 1,152) are IQ4_NL or Q8_0
+    const bool nl = ty == 20, nv4 = ty == 40, q80 = ty == 8;
+#endif
+    if (q20 || nl || nv4 || q80 ? K % 128 != 0 : (K % 256 != 0 || !dq_supported(ty))) return false;
     const size_t row_bytes = iq_row_bytes(ty, K);
     const int mt = (max_rows + WG_MT * WG_BM - 1) / (WG_MT * WG_BM);   // row chunks per expert
     const dim3 grid((unsigned) (n_out / WG_BN), (unsigned) (n_experts * mt));
     cudaStream_t s = (cudaStream_t) stream;
     auto smem = [](int wk) { return (size_t) WG_BN * (wk + 8) * 2 + (size_t) WG_BM * (WG_XK + 8) * 2; };
+#if defined(__HIPCC__)
+    // RDNA3/RDNA4 only, and a tile that fits the LDS of a block (64 KiB: the WK 256 tiles' 85,000 bytes do not); the
+    // dynamic LDS needs no attribute below 64 KiB
+    if (!wg_card(smem(q20 || nl || nv4 || q80 ? 128 : 256))) return false;
+#else
     // the shared-memory attribute belongs to the current device, so it is set on each card: with one flag for the
     // process a layer split's second card launched without it and the prompt stopped ("the WMMA expert tiles could not launch")
     static bool attr[64];
@@ -8125,6 +8439,7 @@ bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, 
                              (int) smem(128));
         attr[dev] = true;
     }
+#endif
     if (q20)
         gemm_iq_f16_grouped_kernel<128, true><<<grid, WG_THREADS, smem(128), s>>>(ty, (const uint8_t*) W, expert_bytes, row_bytes, K,
                                                                                  (const __half*) X, ldx, bounds, mt, Y, ldy);
@@ -8134,6 +8449,11 @@ bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, 
     else if (nv4)
         gemm_iq_f16_grouped_kernel<128, false, false, true><<<grid, WG_THREADS, smem(128), s>>>(
             ty, (const uint8_t*) W, expert_bytes, row_bytes, K, (const __half*) X, ldx, bounds, mt, Y, ldy);
+#if defined(__HIPCC__)
+    else if (q80)
+        gemm_iq_f16_grouped_kernel<128, false><<<grid, WG_THREADS, smem(128), s>>>(ty, (const uint8_t*) W, expert_bytes, row_bytes, K,
+                                                                                  (const __half*) X, ldx, bounds, mt, Y, ldy);
+#endif
     else
         gemm_iq_f16_grouped_kernel<256, false><<<grid, WG_THREADS, smem(256), s>>>(ty, (const uint8_t*) W, expert_bytes, row_bytes, K,
                                                                                   (const __half*) X, ldx, bounds, mt, Y, ldy);
@@ -8141,17 +8461,14 @@ bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, 
 }
 
 }  // namespace strata::kernels
-#else
+#if defined(__HIPCC__)
 namespace strata::kernels {
-bool gemm_iq_f16_grouped(int, const void*, size_t, int, int, const void*, int, const int32_t*, int, int, float*, int, void*) {
-    return false;
-}
 bool gemm_iq_i8_takes(int, int) { return false; }
 void gemm_iq_i8_turing(bool) {}
 void gemm_iq_i8_allow(int, bool) {}
 void gemm_iq_i8_quantize(const float*, const int32_t*, int64_t, int64_t, int, void*, void*) {}
 bool gemm_iq_i8_grouped(int, const void*, size_t, int, int, const void*, int64_t, const int32_t*, int, int, const int32_t*, float*,
-                        int64_t, void*, const int32_t*) {
+                        int64_t, void*, const int32_t*, const int64_t*) {
     return false;
 }
 }  // namespace strata::kernels

@@ -7,6 +7,9 @@
 // engine asks for it (gemm_iq_i8_allow()), so the test asks.  Its exponents are drawn from 120 to 135, and in two more
 // sets of cases from the ends of E8M0's range: 0, 1 and 2 (scales of 2^-128 to 2^-126, the first two subnormal) and
 // 254 (2^126, with rows of values 2^-24 times as large, so that the products stay finite).
+// NVFP4 (64-value blocks,
+// Inkling 2 Mini's down: 1,152 values) takes the int8 product only with STRATA_PREFILL_NVFP4=w4a8 (mmq_own.cu), so
+// it is checked in a run with that set (poly_mmq_k32_test_w4a8).
 //
 // usage: poly_mmq_k32_test [--turing-int8]   (--turing-int8: the int8 product on Turing too, gemm_iq_i8_turing(); exit 0: every case agrees; 77: no card, or no int8 product on it)
 #include "mmq.hpp"
@@ -26,9 +29,9 @@ using strata::poly::Mmq;
 
 namespace {
 
-struct Quant { const char* name; int type; int block; };   // ggml_type, bytes of a block of 32 values
+struct Quant { const char* name; int type; int block; int vals = 32; };   // ggml_type, bytes of a block of `vals` values
 constexpr Quant kQuants[] = {{"Q4_0", 2, 18}, {"Q5_0", 6, 22}, {"Q5_1", 7, 24}, {"Q8_0", 8, 34}, {"IQ4_NL", 20, 18},
-                             {"MXFP4", 39, 17}};
+                             {"MXFP4", 39, 17}, {"NVFP4", 40, 36, 64}};
 constexpr int kRows = 200;   // weight rows a matrix: not a whole number of the kernel's tiles of 64
 
 bool ok(cudaError_t e, const char* what) {
@@ -97,7 +100,7 @@ int mxfp4_misses(const std::vector<uint8_t>& w, const std::vector<float>& x, con
 // MXFP4: each block's exponent one of exps (empty: 120 to 135), the rows' values times x_scale (a power of two).
 int run_case(const Quant& q, int k, int n, const std::vector<int>& rows, std::mt19937& rng,
              const std::vector<int>& exps = {}, float x_scale = 1.0f) {
-    const int kp = (k + 255) / 256 * 256, nb = k / 32, nbp = kp / 32;
+    const int kp = (k + 255) / 256 * 256, nb = k / q.vals, nbp = kp / q.vals;
     const size_t mat = (size_t) kRows * nb * q.block, matp = (size_t) kRows * nbp * q.block;
     std::vector<uint8_t> w(mat * n), wp(matp * n, 0);
     for (auto& b : w) b = (uint8_t) rng();
@@ -109,6 +112,8 @@ int run_case(const Quant& q, int k, int n, const std::vector<int>& rows, std::mt
         }
         p[0] = (uint8_t) rng(); p[1] = 0x30;
         if (q.type == 7) { p[2] = (uint8_t) rng(); p[3] = 0x30; }
+        if (q.type == 40)   // NVFP4: four UE4M3 scales, every byte finite (0x7F and 0x00 are 0), here 2^-6 to 2^1
+            for (int j = 0; j < 4; ++j) p[j] = (uint8_t) (0x08 * (1 + rng() % 8) + rng() % 8);
     }
     for (int e = 0; e < n; ++e)
         for (int r = 0; r < kRows; ++r)
@@ -171,8 +176,9 @@ int main(int argc, char** argv) {
     std::mt19937 rng(11);
     int failures = 0, cases = 0, ran = 0;
     for (const Quant& q : kQuants) {
-        // Gemma 4's down; a stage and a block; one block; whole stages (and for MXFP4 Inkling 2's down)
-        for (int k : q.type == 39 ? std::vector<int>{1152, 704, 288, 32, 512} : std::vector<int>{704, 288, 32, 512}) {
+        // Gemma 4's down; a stage and a block; one block; whole stages (and Inkling 2 Mini's down for MXFP4 and NVFP4)
+        for (int k : q.type == 39 ? std::vector<int>{1152, 704, 288, 32, 512}
+                     : q.vals == 64 ? std::vector<int>{1152, 320, 64, 512} : std::vector<int>{704, 288, 32, 512}) {
             if (!Mmq::reads_by_index(q.type, k)) {   // the int8 product's own test (mmq_own.cu: int8_rows())
                 std::printf("%s K=%d: no int8 product on this card, not checked\n", q.name, k);
                 continue;

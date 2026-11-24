@@ -208,8 +208,13 @@ or `terminal/run-<model>.sh` start the model directly. The options are the same 
 `--model Q2_0 --yes`, `--gguf-dir /data/Q2_0`). Terminal chat: `terminal/.venv/bin/python terminal/tools/chat.py`. Building from git and trying a pull
 request: [SOURCE_INSTALL.md](SOURCE_INSTALL.md#build-from-git-on-linux-to-try-a-pull-request-or-change-the-code).
 
-- **Updating:** `./setup.sh --update` (it runs `git pull` first), or `git pull` and then `./setup.sh`. It compiles the
-  engine again when its source changed. If the compile fails, it says so and starts the engine you had.
+- **Ready-made engine:** on an x86-64 PC with an NVIDIA card, setup downloads the release's Linux engine (strata-poly and
+  the picture reader, CUDA 13) with NVIDIA's CUDA libraries from pip, as on Windows. It needs glibc 2.34 and GCC 12's
+  libstdc++ or newer (Ubuntu 22.04, Debian 12 and later). When the release has none for your checkout's source or
+  card, or it does not start on your system, setup compiles the engine instead (`--build` always compiles).
+- **Updating:** `./setup.sh --update` (it runs `git pull` first), or `git pull` and then `./setup.sh`. When the engine's
+  source changed it takes the release's ready-made engine of that source, or compiles it when there is none. If the
+  compile fails, it says so and starts the engine you had.
 - **Other distributions** (Arch, Fedora and others): install the C++ compiler and the CUDA Toolkit 13 with your package
   manager first (Arch: `sudo pacman -S base-devel cuda`). Setup finds `nvcc` on `PATH`, in `/usr/local/cuda*` and in
   `/opt/cuda*`.
@@ -1639,11 +1644,12 @@ ceiling 32768 -> 16384 -> 8192 when the RAM available does not cover the extra l
 or `STRATA_DEFAULTS=026` keep 8192 (`STRATA_NV_CHUNK=16` keeps 16384); `--prefill N`, `auto:N` and `STRATA_PREFILL_AUTO_MAX` are
 never changed. `STRATA_ROUTE_PRIOR` raises KL and is an opt-in again in 0.2.8 (0.2.7 set 1.5 by itself on a discrete NVIDIA card of 13 GiB or less, and the owner took that back on 2026-10-29 because of repetition loops and weaker results in long agent sessions, #4402). `STRATA_ROUTE_PRIOR=1.5` on an RTX 3060 12 GB: story +15%, code +37%, 80 tasks with no copy or code errors, but 4.5 of 10 agent tasks against 5.6 with it off.
 
-## strata-poly: flash attention for prompt reading (a `-DSTRATA_POLY_MMQ=ON` build; `STRATA_FATTN=0` turns it off)
+## strata-poly: flash attention for prompt reading (on by default; `STRATA_FATTN=0` turns it off)
 
-strata-poly is built without llama.cpp by default, and that build leaves this kernel out: the prompt's attention takes
-the old path below. A build with `-DSTRATA_POLY_MMQ=ON` (llama.cpp's kernels
-from a checkout given as `-DSTRATA_GGML_DIR`, an override kept for two releases) has it, on by default, as follows.
+strata-poly is built without llama.cpp by default; its build takes this kernel from `src/poly/fattn_mma_d256.cuh`,
+llama.cpp's kernel cut down to the shapes below, with the same sums as the copy a `-DSTRATA_POLY_MMQ=ON` build
+compiles from llama.cpp's headers. (0.2.19-poly.1 and 0.2.20-poly.1 left it out of the default build, and their
+prompts read through the old path below.)
 
 For strata-poly's Qwen3.6 family, including Ornith 122B (heads of 256 values, 8 or 16 heads a group), on an
 Ampere or later NVIDIA card. A prompt batch's attention runs through llama.cpp's flash-attention kernel

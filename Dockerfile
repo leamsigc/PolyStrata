@@ -66,7 +66,7 @@ ARG BUILD_VISION=1
 
 RUN python3 -m venv .venv \
     && .venv/bin/pip install --no-cache-dir --upgrade pip \
-    && .venv/bin/pip install --no-cache-dir -r requirements.txt \
+    && .venv/bin/pip install --no-cache-dir -r terminal/requirements.txt \
     && chmod +x setup.sh docker-entrypoint.sh
 
 # llama.cpp at the pinned commit, then the engine and the image encoder, built
@@ -75,7 +75,8 @@ RUN python3 -m venv .venv \
 # decide whether an engine is current: source=local with a matching src hash
 # means the first start reuses it instead of recompiling.
 RUN .venv/bin/python - <<'PYEOF'
-import json, os, pathlib, shutil
+import json, os, pathlib, shutil, sys
+sys.path.insert(0, "/opt/strata/terminal")   # setup.py lives in terminal/ in this layout
 import setup
 
 llama = setup.get_llama_cpp()
@@ -83,7 +84,7 @@ nvcc, _ = setup.find_nvcc()
 arch = os.environ.get("CUDA_ARCHITECTURES", "75;80;86;89;120").strip().strip('"').replace(",", ";")
 vision = "gpu" if os.environ.get("BUILD_VISION", "1") == "1" else "none"
 
-setup.cmake_build(setup.ROOT, setup.ROOT / "build", "strata",
+setup.cmake_build(setup.engine_src(), setup.ROOT / "build", "strata",
     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON", "-DSTRATA_BUILD_TESTS=OFF",
      f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
      f"-DSTRATA_GGML_DIR={llama}"], None, "build-strata.bat")

@@ -137,7 +137,7 @@ The same idea, in a container (NVIDIA cards).
    `MODEL` (with `FAMILY`) selects `/data/config/strata-<model>.json` (the model name in lowercase), so
    `-e MODEL=IQ3_S.1X4-BATCH9` starts `/data/config/strata-iq3_s.1x4-batch9.json`: that is the way to keep
    several configs of one model on one volume. `-e CONFIG=/data/config/my.json` overrides it with any
-   config file. A link `/opt/strata/strata-<model>.json` that already points into `/data/config/` (made by
+   config file. A link `/opt/strata/terminal/strata-<model>.json` that already points into `/data/config/` (made by
    a pod command before the entrypoint runs) is kept. The entrypoint prints one `Config:` line naming the
    file the server starts with.
    PolyStrata loads 32-62 GB into RAM. `--gpus all` on a host with two usable cards takes both: the

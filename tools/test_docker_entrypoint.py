@@ -1,5 +1,5 @@
 """docker-entrypoint.sh keeps the install config on the /data volume as the one that counts (#1244): with REINSTALL=0
-and a config on the volume, /opt/strata/strata-<tag>.json is a link to it, even when a regular file is already there.
+and a config on the volume, /opt/strata/terminal/strata-<tag>.json is a link to it, even when a regular file is already there.
 It also passes the setup env vars (PARALLEL, CONVERSATION_CACHE_*) only when they are set. Runs the real script in a
 temporary tree with a stub for .venv/bin/python (POSIX sh and symlinks needed: skipped on Windows).
 
@@ -26,12 +26,13 @@ class Entrypoint(unittest.TestCase):
         self.opt = self.tmp / "opt"
         self.data = self.tmp / "data"
         (self.opt / ".venv" / "bin").mkdir(parents=True)
+        (self.opt / "terminal").mkdir(parents=True)
         (self.data / "config").mkdir(parents=True)
-        # the stub "python": setup.py --setup writes the config the way setup does (and prints the args it was given);
-        # a plain start prints what it would load
+        # the stub "python": setup.py --setup writes the config the way setup does (ROOT is the folder setup.py lives
+        # in, terminal/, so that is where it writes), and a plain start prints what it would load
         stub = self.opt / ".venv" / "bin" / "python"
-        stub.write_text('#!/bin/sh\nif [ "$2" = "--setup" ]; then echo "SETUP ARGS: $*"; echo \'{"args": ["from-setup"]}\' > strata-iq3_s.json\n'
-                        'else echo "STARTED WITH: $(cat strata-iq3_s.json)"; fi\n', encoding="utf-8")
+        stub.write_text('#!/bin/sh\nif [ "$2" = "--setup" ]; then echo "SETUP ARGS: $*"; echo \'{"args": ["from-setup"]}\' > terminal/strata-iq3_s.json\n'
+                        'else echo "STARTED WITH: $(cat terminal/strata-iq3_s.json)"; fi\n', encoding="utf-8")
         stub.chmod(0o755)
         script = (ROOT / "docker-entrypoint.sh").read_text(encoding="utf-8").replace("/opt/strata", str(self.opt))
         self.script = self.tmp / "entry.sh"
@@ -45,11 +46,11 @@ class Entrypoint(unittest.TestCase):
 
     def test_edited_volume_config_wins_over_a_regular_file_in_opt(self):
         (self.data / "config" / "strata-iq3_s.json").write_text('{"args": ["edited", "--kv-resident", "32768"]}\n')
-        (self.opt / "strata-iq3_s.json").write_text('{"args": ["stale"]}\n')      # left by an earlier setup
+        (self.opt / "terminal" / "strata-iq3_s.json").write_text('{"args": ["stale"]}\n')      # left by an earlier setup
         out = self.run_entry("0")
         self.assertIn("edited", out)
         self.assertNotIn("stale", out)
-        self.assertTrue((self.opt / "strata-iq3_s.json").is_symlink())
+        self.assertTrue((self.opt / "terminal" / "strata-iq3_s.json").is_symlink())
 
     def test_link_is_made_when_there_is_no_file(self):
         (self.data / "config" / "strata-iq3_s.json").write_text('{"args": ["on-volume"]}\n')
@@ -67,7 +68,7 @@ class Entrypoint(unittest.TestCase):
         (self.data / "config" / "strata-iq3_s.json").write_text('{"args": ["plain"]}\n')
         other = self.data / "config" / "strata-iq3_s.1x4.json"
         other.write_text('{"args": ["batch8"]}\n')
-        os.symlink(other, self.opt / "strata-iq3_s.json")
+        os.symlink(other, self.opt / "terminal" / "strata-iq3_s.json")
         out = self.run_entry("0")
         self.assertIn("batch8", out)
         self.assertNotIn("plain", out)
@@ -77,14 +78,14 @@ class Entrypoint(unittest.TestCase):
         (self.data / "config" / "strata-iq3_s.json").write_text('{"args": ["on-volume"]}\n')
         elsewhere = self.tmp / "elsewhere.json"
         elsewhere.write_text('{"args": ["elsewhere"]}\n')
-        os.symlink(elsewhere, self.opt / "strata-iq3_s.json")
+        os.symlink(elsewhere, self.opt / "terminal" / "strata-iq3_s.json")
         self.assertIn("on-volume", self.run_entry("0"))
 
     def test_config_env_wins(self):
         (self.data / "config" / "strata-iq3_s.json").write_text('{"args": ["plain"]}\n')
         other = self.tmp / "mine.json"
         other.write_text('{"args": ["mine"]}\n')
-        os.symlink(self.data / "config" / "strata-iq3_s.json", self.opt / "strata-iq3_s.json")
+        os.symlink(self.data / "config" / "strata-iq3_s.json", self.opt / "terminal" / "strata-iq3_s.json")
         out = self.run_entry("0", CONFIG=str(other))
         self.assertIn("mine", out)
         self.assertNotIn("plain", out)

@@ -88,9 +88,9 @@ mkdir -p "$STRATA_DATA/config"
 # setup.py measures the PC's RAM from /proc/meminfo, which in a container is the host's total,
 # not the container's limit, so a memory-capped container has to ask for the low-RAM mode itself.
 #
-# Which config the server starts with (#1244): CONFIG when set; else a link in /opt/strata that already points
+# Which config the server starts with (#1244): CONFIG when set; else a link in /opt/strata/terminal that already points
 # into $STRATA_DATA/config/ (a pod command that picked one by linking); else MODEL's strata-<model>.json.
-link="/opt/strata/strata-$tag.json"
+link="/opt/strata/terminal/strata-$tag.json"
 keep=""
 if [ -n "$CONFIG" ]; then
   [ -f "$CONFIG" ] || { echo "CONFIG=$CONFIG does not exist." >&2; exit 1; }
@@ -123,13 +123,13 @@ elif [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then
   if [ -n "$PARALLEL" ]; then set -- "$@" --parallel "$PARALLEL"; fi
   if [ -n "$CONVERSATION_CACHE_MIB" ]; then set -- "$@" --conversation-cache-mib "$CONVERSATION_CACHE_MIB"; fi
   if [ -n "$CONVERSATION_CACHE_SLOTS" ]; then set -- "$@" --conversation-cache-slots "$CONVERSATION_CACHE_SLOTS"; fi
-  .venv/bin/python setup.py --setup --yes "$@"
-  [ -e "/opt/strata/strata-$tag.json" ] && { cmp -s "/opt/strata/strata-$tag.json" "$cfg" || cp -f "/opt/strata/strata-$tag.json" "$cfg"; }
+  .venv/bin/python terminal/setup.py --setup --yes "$@"
+  [ -e "$link" ] && { cmp -s "$link" "$cfg" || cp -f "$link" "$cfg"; }
   echo "Config: $cfg (from MODEL $MODEL, just set up)"
 else
-  # #1244: the copy on the volume is the one that counts, so a regular file left in /opt/strata by an earlier setup
+  # #1244: the copy on the volume is the one that counts, so a regular file left in /opt/strata/terminal by an earlier setup
   # (or by an image built with one) must not stand in for it: edits to /data/config would be ignored
-  ln -sfn "$cfg" "/opt/strata/strata-$tag.json"
+  ln -sfn "$cfg" "$link"
   echo "Config: $cfg (from MODEL $MODEL)"
 fi
 
@@ -144,4 +144,4 @@ if [ -n "$GPUS" ]; then set -- "$@" --gpus "$GPUS"; fi
 if [ -n "$GPU" ]; then set -- "$@" --gpu "$GPU"; fi
 if [ -n "$LAYER_SPLIT" ]; then set -- "$@" --layer-split "$LAYER_SPLIT"; fi
 if [ -n "$BACKEND" ]; then set -- "$@" --backend "$BACKEND"; fi
-exec .venv/bin/python setup.py "$@"
+exec .venv/bin/python terminal/setup.py "$@"

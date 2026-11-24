@@ -7,11 +7,12 @@ force). No GPU, no downloads, no prompts.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1] / "terminal"
 sys.path.insert(0, str(ROOT))
 import setup  # noqa: E402
 
@@ -46,6 +47,17 @@ class GivenOnTheCommandLine(unittest.TestCase):
         self.assertEqual(setup.conv_cache_args(asked(), "auto"), ["--conversation-cache-mib", "auto"])
         self.assertEqual(setup.conv_cache_args(asked(slots=6), setup.AGENT_CACHE_MIB),
                          ["--conversation-cache-mib", str(setup.AGENT_CACHE_MIB), "--conversation-cache-slots", "6"])
+
+
+class Argparse(unittest.TestCase):
+    def test_the_flags_are_registered_on_setup(self):
+        # conv_cache_args() reads these from the parsed args: without the add_argument() calls the entry point's
+        # --conversation-cache-mib / --conversation-cache-slots are refused as unrecognized arguments.
+        r = subprocess.run([sys.executable, str(ROOT / "setup.py"), "--help"],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("--conversation-cache-mib N", r.stdout)
+        self.assertIn("--conversation-cache-slots N", r.stdout)
 
 
 if __name__ == "__main__":

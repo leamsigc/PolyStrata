@@ -11728,6 +11728,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
 
     step(7, "writing the start script")
     args = ["--native", str(gguf), "--max-context", str(ctx), "--prefill", "auto", "--mtp", str(fam["mtp"])]
+    args += conv_cache_args(a)                     # opt-in: nothing on a start that did not ask for the cache
     if a.vram_reserve_mib is not None:             # VRAM left free for other programs: the experts take that much less
         vram = gpu.get("vram_gb", 0.0)
         if vram > 0:
@@ -12896,6 +12897,11 @@ def main() -> int:
     ap.add_argument("--parallel", type=int, metavar="N",
                     help="up to N requests decode together (batch slots, opt-in; default: one at a time, the others "
                          "wait). Each slot takes VRAM from the expert cache; setup says what it recommends")
+    ap.add_argument("--conversation-cache-mib", type=int, metavar="N",
+                    help="RAM in MiB for parked conversations: an agent's next turn reuses the prompt instead of "
+                         "reading it again (opt-in; unset or 0 leaves setup's own choice)")
+    ap.add_argument("--conversation-cache-slots", type=int, metavar="N",
+                    help="at most N parked conversations (engine default 4); used with --conversation-cache-mib")
     ap.add_argument("--warm-start", nargs="?", const=True, metavar="FILE",
                     help="an agent's system prompt with its tools is ready when the server starts (\"warm_start\" in "
                          "the run config, opt-in): the server keeps the one the last agent sent, and strata-poly keeps "

@@ -9022,12 +9022,34 @@ def setup_calibration(cfg: dict, hip: bool) -> dict | None:
     return saved_calibration(cfg)
 
 
+def _rebase_old_layout_path(v):
+    """A run config kept on an outside data dir still names the old root-layout files (ROOT.parent/engine/... from
+    before 0.2.16); this checkout keeps them in ROOT/engine/... . Only rewrite a path that is missing at the old
+    place and present at the new one, so a file someone chose at the checkout root is left alone."""
+    if isinstance(v, list):
+        out = [_rebase_old_layout_path(x) for x in v]
+        return [x[0] for x in out], any(x[1] for x in out)
+    if isinstance(v, dict):
+        out = {k: _rebase_old_layout_path(x) for k, x in v.items()}
+        return {k: x[0] for k, x in out.items()}, any(x[1] for x in out.values())
+    if not isinstance(v, str):
+        return v, False
+    old, new = str(ROOT.parent), str(ROOT)
+    for o, n in ((old, new), (old.replace("\\", "/"), new.replace("\\", "/"))):
+        if v.startswith(o + os.sep) or v.startswith(o + "/") or v.startswith(o + "\\"):
+            rest = v[len(o):]
+            if not Path(v).exists() and Path(n + rest).exists():
+                return n + rest, True
+    return v, False
+
+
 def upgrade_config(cfg_path: Path, cfg: dict) -> dict:
     """Configs written before v0.1.13 read prompts in fixed 2048-token chunks; the engine now picks the chunk
     itself (`--prefill auto`: up to 8192, as the free VRAM allows - about 2x faster on long prompts).  Under WSL,
-    KV streaming is dropped: its RAM copy must be pinned, and the driver pins only about 1 GB there."""
+    KV streaming is dropped: its RAM copy must be pinned, and the driver pins only about 1 GB there.  A config
+    kept outside the checkout is rebased once from the pre-0.2.16 root layout."""
+    cfg, changed = _rebase_old_layout_path(cfg)
     a = cfg.get("args", [])
-    changed = False
     ver = engine_version(cfg["exe"]) if "--prefill" in a else (0, 0, 0)
     if "--prefill" in a and a[a.index("--prefill") + 1] == "2048" and ver >= (0, 1, 13):
         a[a.index("--prefill") + 1] = "auto"
@@ -9043,7 +9065,7 @@ def upgrade_config(cfg_path: Path, cfg: dict) -> dict:
         changed = True
         ok("WSL: KV streaming off (the driver pins only about 1 GB of RAM); the KV cache stays in VRAM")
     if changed:
-        write_config(cfg_path, cfg)
+        write_config(cfg_path.resolve(), cfg)   # a link into the data dir stays a link: update its target, not the link
     return cfg
 
 

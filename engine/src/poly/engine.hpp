@@ -129,11 +129,11 @@ struct Options {
                                   ///< this share of its token's experts' weight, for every token of the call, is left
                                   ///< out (--skip-weight); 0: tail_skip decides
     std::string attn_requant;     ///< Inkling 2: its attention's six matrices quantized again to this type at load
-                                  ///< (q4_0, q5_0 or iq4_nl; --attn-requant); empty: the file's types
+                                  ///< (q4_0, q5_0, q5_k, q6_k or iq4_nl; --attn-requant); empty: the file's types
     bool loop_bf16 = false;       ///< Inkling 2: its loop controllers' matrices in BF16, not the file's F32 (--loop-bf16)
-    int prompt_int8 = -1;         ///< Inkling 2: on Turing its prompt products on the int8 tensor cores, as on Ampere
-                                  ///< (gemm_iq_i8_turing()); -1: the default, off; 1: --prompt-int8; 0: --no-prompt-int8,
-                                  ///< Turing's halves and cuBLAS
+    int prompt_int8 = -1;         ///< Inkling 2: its prompt products on the int8 tensor cores, as on Ampere, on Turing and
+                                  ///< AMD's RDNA3 / RDNA4 (gemm_iq_i8_turing()); -1: the default (Turing off, AMD on);
+                                  ///< 1: --prompt-int8; 0: --no-prompt-int8, the halves and BLAS
     float cache_bias = 0;         ///< a token's few-at-a-time routing adds this to the score of each expert in VRAM
                                   ///< before it picks its experts; their weights stay the router's own
                                   ///< (--cache-bias, qwen35moe and inkling2_loop, route_cached()); 0: the router's own
@@ -357,9 +357,9 @@ public:
     /// a step() takes it back.  picked() is the token either way.
     void step_picks() { step_picks_ = !next_; }
     int32_t picked(int i) const;
-    /// The same for the next eval() of one token with its logits: picked(0) is its most likely token, and logits()
-    /// are not copied to the host (Inkling 2's 201,024 scores are 0.8 MB to copy and to search a token).
-    /// On a layer split the last card picks: it has the logits.
+    /// The same for the next eval() of one token with its logits, or the next window(): picked(i) is row i's most
+    /// likely token, and logits() / logits_of() are not copied to the host (Inkling 2's 201,024 scores are 0.8 MB to
+    /// copy and to search a token).  On a layer split the last card picks: it has the logits.
     void eval_picks() {
         if (next_) next_->eval_picks();
         else eval_picks_ = true;
@@ -521,6 +521,8 @@ protected:
     virtual int widest() const = 0;
     /// The copies of a token's embedding a layer's input starts from.
     virtual int streams() const = 0;
+    /// Clear any per-call state before run(), step(), or read_groups() starts (or unwinds).
+    virtual void reset_call() {}
     /// A layer from its input to its router's copy (a layer without routed experts: to its end).
     virtual void layer_head(Layer& L, int il, int n) = 0;
     /// The routed experts' sum (fo_) into the layer's output.
@@ -739,8 +741,19 @@ protected:
     /// own block, or kSumRows.  The others keep kSumRows, whose windows past it are routed on the host as before.
     int card_rows() const;
     void moe_add(int n);
+    // record(): null when the card has no VRAM for the recording even after drop_recordings(); `work` has then run
+    // unrecorded (run_direct()), unless `run_if_not` is false, when the caller runs it with run_direct() itself.
     template <class F>
-    void* record(F&& work);
+    void* record(F&& work, bool run_if_not = true);
+    template <class F>
+    void run_direct(F&& work);
+    /// cudaGraphInstantiate, with VRAM given back first when the card has none for it (the step recordings, then
+    /// drop_recordings()); null when it still has none.  Its graph stays the caller's to destroy.
+    void* instantiate(void* graph);
+    /// record()'s recordings made before this call are destroyed, and made again where they are next needed.
+    size_t drop_recordings();
+    /// At a call's start, after a recording the card had no VRAM for: the expert cache gives up a piece for them.
+    void graph_room();
     // step()'s recordings where the tails take the rows (tail_by_rows(): Inkling 2).  They are keyed by the rows'
     // sequences and rooms, so slots that come and go make more of them for as long as the engine runs: at most
     // step_cap_ are held, the least recently launched dropped first (trim_step_graphs()), and a recording the card has
@@ -782,7 +795,9 @@ protected:
     int room(int n) const;
     int room_key(int n) const;
     void* dmalloc(size_t bytes, const char* what);
-    void* hmalloc(size_t bytes, const char* what);
+    /// `live`: memory that the card and the host read and write while a kernel runs (the doorbell): on HIP
+    /// coherent (hipHostMallocCoherent), so the card never reads it from a cache; on CUDA all pinned memory is.
+    void* hmalloc(size_t bytes, const char* what, bool live = false);
     void hfree(void* p);
     std::vector<uint8_t> ram_keep(const std::vector<float>* lately = nullptr) const;
     bool read_file(uint8_t* dst, const uint8_t* src, size_t n, bool copy = false) const;
@@ -967,6 +982,15 @@ protected:
     size_t step_bytes_ = 0;         ///< what cudaMemGetInfo() lost to them before the first drop (for the log)
     size_t step_made_ = 0, step_dropped_ = 0, step_unrecorded_ = 0, step_logged_ = 0;
     bool in_step_ = false;          ///< inside step(): record() keeps this step's step recordings
+    /// record()'s recordings: the call (rec_call_) that made each one.  drop_recordings() keeps that call's.
+    std::map<void*, uint64_t> rec_made_;
+    uint64_t rec_call_ = 0;         ///< run()s and step()s so far
+    uint64_t rec_tries_ = 0;        ///< record()'s instantiations (STRATA_POLY_RECORD_FAIL, STRATA_POLY_RECORD_DROP)
+    int rec_off_ = 0;               ///< calls left that record nothing: the card had no VRAM, and graph_room() none
+    int rec_room_mib_ = 0;          ///< what graph_room() took from the expert cache; mind_card_vram() keeps it free
+    bool rec_short_ = false;        ///< a recording found no VRAM in this call: graph_room() at the next one
+    bool direct_ = false;           ///< run_direct() is running a recording's launches unrecorded
+    size_t rec_dropped_ = 0, rec_unrecorded_ = 0;
     void* tail_ = nullptr;        ///< one token's launches from the last layer to the logits, recorded
     void* tail_picks_ = nullptr;  ///< the same, the most likely token in place of the logits (eval_picks())
     // A recorded launch cannot be given the position as an argument: it reads it here when it runs.  eval() writes
@@ -1174,9 +1198,10 @@ protected:
     int32_t *d_ex_ = nullptr, *h_ex_ = nullptr;   ///< a prompt batch's rows' experts (ExpertScales), in VRAM and pinned
     int32_t* d_ids_ = nullptr;                    ///< a batch's experts and weights when it routes on the card
     float* d_wts_ = nullptr;
+    void* d_grp_ = nullptr;                       ///< GPU expert dedup table for multi-token moe_card()
     int32_t* h_ids_ = nullptr;                    ///< pinned: the experts, back from the card
-    float* h_wts_ = nullptr;                      ///< pinned: their weights, for step()'s rows (bells(), --batch)
-    /// While moe() takes step()'s rows: their picks from the card (h_ids_, h_wts_), as a token alone routes there
+    float* h_wts_ = nullptr;                      ///< pinned: their weights, for step()'s and window()'s rows (bells())
+    /// While moe() takes several rows: their picks from the card (h_ids_, h_wts_), as a token alone routes there
     const int32_t* step_ids_ = nullptr;
     void** d_slots_ = nullptr;                    ///< every layer's L.slot on the card, n_expert_ a layer (moe_card())
     std::vector<void*> h_slots_;                  ///< what d_slots_ holds
@@ -1204,8 +1229,14 @@ protected:
     bool bell_ = false;                           ///< this call rings (run())
     bool bell_counts_ = false;                    ///< a call since follow() last read d_use_ rang: picks to read
     bool bell_on(int n) const;
+    // Where a token alone routes on the card (the doorbell), rows the host takes are routed there too (route_card(),
+    // step_ids_): the host's route() need not round the gates like the card's.  The first: whether a token alone is
+    // routed on the card at all; the second: whether layer L is (moe_card() would find its kernels).
+    bool picks_like_alone() const;
+    bool picks_like_alone(const Layer& L) const;
     void bell_serve();
     void bell_job();
+    void bell_unwind();
     uint8_t* stage_ = nullptr;                    ///< experts that are not cached, on their way through VRAM
     uint8_t* h_stage_[2] = {};                    ///< pinned; filled in turn
     void* ev_stage_[2] = {};                      ///< marks the upload out of each

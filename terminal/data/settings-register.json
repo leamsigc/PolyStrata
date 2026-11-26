@@ -23817,6 +23817,66 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_MMQ_TEST_DUMP",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/poly/mmq_paths_test.cu",
+     "line": 83,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "research",
+   "owner": "poly",
+   "note": "test only: poly_mmq_paths_test writes each int8 product's floats to DIR/<type>_<K>_<case>.bin and the inputs' hashes to DIR/inputs.txt, to compare CUDA's and HIP's int8 tiles bit for bit (engine/src/poly/mmq_paths_test.cu)",
+   "retire_after": "",
+   "retired_in": "",
+   "first_date": "2026-11-24",
+   "last_date": "2026-11-24"
+  },
+  {
+   "name": "STRATA_MMQ_TEST_REF",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/poly/mmq_paths_test.cu",
+     "line": 87,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "research",
+   "owner": "poly",
+   "note": "test only: poly_mmq_paths_test compares each int8 product's bytes with DIR's file of the same name (another card's STRATA_MMQ_TEST_DUMP) and fails where one is missing or differs (engine/src/poly/mmq_paths_test.cu)",
+   "retire_after": "",
+   "retired_in": "",
+   "first_date": "2026-11-24",
+   "last_date": "2026-11-24"
+  },
+  {
    "name": "STRATA_MMQ_TIER_SORT",
    "backends": [
     "cuda-hip"
@@ -34086,13 +34146,13 @@
   {
    "name": "STRATA_POLY_BELL",
    "backends": [
-    "cuda"
+    "cuda-hip"
    ],
    "reads": [
     {
      "file": "engine/src/poly/engine.cpp",
      "line": 3731,
-     "backend": "cuda",
+     "backend": "cuda-hip",
      "fn": "getenv"
     }
    ],
@@ -34392,6 +34452,78 @@
    "status": "research",
    "owner": "poly",
    "note": "[reviewed] =1: every prompt product by the BLAS path, as on Turing and on an AMD card without the matrix cores, to check that path on a card that has the tiles (on RDNA3/RDNA4: the products as before the matrix-core tiles) (engine/src/poly/mmq_own.cu:179)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_POLY_RECORD_DROP",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/poly/engine.cpp",
+     "line": 6836,
+     "backend": "cuda-hip",
+     "fn": "env_every"
+    },
+    {
+     "file": "engine/src/poly/engine.cpp",
+     "line": 6966,
+     "backend": "cuda-hip",
+     "fn": "env_every"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "4319541e6b",
+   "first_date": "2026-11-24",
+   "since": null,
+   "last_commit": "4319541e6b",
+   "last_date": "2026-11-24",
+   "status": "research",
+   "owner": "",
+   "note": "test only: Inkling 2, every Nth call (and before every Nth layer recording) drops the layer recordings made so far, to exercise their re-making.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_POLY_RECORD_FAIL",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/poly/engine.cpp",
+     "line": 6836,
+     "backend": "cuda-hip",
+     "fn": "env_every"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "4319541e6b",
+   "first_date": "2026-11-24",
+   "since": null,
+   "last_commit": "4319541e6b",
+   "last_date": "2026-11-24",
+   "status": "research",
+   "owner": "",
+   "note": "test only: Inkling 2, every Nth layer recording (CUDA graph) fails as one the card has no VRAM for, so that call runs unrecorded. Like STRATA_POLY_STEP_RECORD_FAIL, which does it for batch-slot step recordings.",
    "retire_after": "",
    "retired_in": ""
   },
